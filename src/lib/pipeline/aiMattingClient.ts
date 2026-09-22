@@ -35,6 +35,10 @@ const INFERENCE_TIMEOUT_MS = 45_000;
 
 let worker: Worker | null = null;
 let seq = 0;
+// Whether the CURRENT worker instance has already completed a job. A freshly
+// respawned worker (e.g. after a watchdog kill) must re-download/re-compile
+// the model, so it gets the FIRST_LOAD budget, not the short inference one.
+let workerLoaded = false;
 let pending: ((r: { ok: boolean; result: MattingResult | null }) => void) | null = null;
 
 let progressListener: ((pct: number | null) => void) | null = null;
@@ -93,6 +97,7 @@ function kill(): void {
   if (worker) {
     worker.terminate();
     worker = null;
+    workerLoaded = false;
   }
   const resolve = pending;
   pending = null;
@@ -123,15 +128,24 @@ function withWatchdog(ms: number): Promise<{ ok: boolean; result: MattingResult 
  * The wait is always bounded: even a fully wedged worker gets terminated.
  */
 export async function aiMatteAsync(bitmap: ImageBitmap): Promise<MattingResult | null> {
+  if (pending) {
+    // Single-slot queue: a second concurrent call (double-click, rapid
+    // upload, warmup racing a real photo) would overwrite the pending
+    // resolver and strand the first caller until its watchdog fires.
+    // Failing fast to the fallback is correct: the custom engine always
+    // works, and the AI stage will be available on the next photo.
+    console.warn("[aiMatting] request already in flight — using fallback for this image.");
+    return null;
+  }
   if (!worker) worker = spawn();
   if (!worker) return null;
 
-  const firstLoad = seq === 0;
-  const job = withWatchdog(firstLoad ? FIRST_LOAD_TIMEOUT_MS : INFERENCE_TIMEOUT_MS);
+  const job = withWatchdog(workerLoaded ? INFERENCE_TIMEOUT_MS : FIRST_LOAD_TIMEOUT_MS);
   const id = ++seq;
   // Transfer the bitmap (zero-copy); the worker owns it afterwards.
   worker.postMessage({ type: "matte", id, bitmap }, [bitmap]);
   const res = await job;
+  workerLoaded = res.ok;
   return res.result;
 }
 
@@ -141,8 +155,14 @@ export async function aiMatteAsync(bitmap: ImageBitmap): Promise<MattingResult |
  * pipeline cached in the worker for the next real image.
  */
 export async function warmupMatting(): Promise<boolean> {
-  // 1x1 bitmap: cheap to run, forces the full download+compile path.
-  const bmp = new OffscreenCanvas(1, 1).transferToImageBitmap();
+  // 32x32 bitmap: large enough that BiRefNet's pyramid downsampling cannot
+  // produce a degenerate empty mask (a 1x1 input can report "empty mask"
+  // even when the model is perfectly healthy), cheap enough to run instantly.
+  const cv = new OffscreenCanvas(32, 32);
+  const ctx = cv.getContext("2d")!;
+  ctx.fillStyle = "#c84040"; // opaque warm block — a trivially matte-able shape
+  ctx.fillRect(0, 0, 32, 32);
+  const bmp = cv.transferToImageBitmap();
   const r = await aiMatteAsync(bmp as unknown as ImageBitmap);
   return r !== null;
 }
