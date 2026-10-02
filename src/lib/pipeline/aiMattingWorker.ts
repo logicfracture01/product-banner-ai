@@ -21,6 +21,13 @@ type MatteRequest = {
   bitmap: ImageBitmap;
 };
 
+// STATIC import on purpose: a dynamic import() would make Rollup code-split
+// the worker bundle, and Vite's default worker format (iife) does not support
+// code splitting — the production build fails outright. Importing statically
+// keeps this worker a single chunk. The *model* is still loaded lazily below,
+// so first paint is unaffected; only the JS module is in the worker bundle.
+import { env, pipeline } from "@huggingface/transformers";
+
 const MODEL_ID = "onnx-community/BiRefNet_lite-ONNX";
 
 type BackgroundRemovalPipeline = (
@@ -38,7 +45,6 @@ function loadPipeline(): Promise<BackgroundRemovalPipeline | null> {
   if (!pipePromise) {
     pipePromise = (async () => {
       try {
-        const { pipeline, env } = await import("@huggingface/transformers");
         // Workers have no DOM; make sure transformers.js doesn't try to use one.
         if (env.backends.onnx.wasm) env.backends.onnx.wasm.proxy = false;
         return (await pipeline("background-removal", MODEL_ID, {
