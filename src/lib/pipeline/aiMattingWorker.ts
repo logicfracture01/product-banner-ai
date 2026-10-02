@@ -7,19 +7,23 @@
 // watchdog below can actually terminate us if we stall.
 //
 // PROTOCOL (mirrors segmentWorker.ts):
+//   Main thread → { type: "preload", id }        (start the download, ask nothing)
 //   Main thread → { type: "matte", id, bitmap (transferred), width, height }
 //   Worker      → { type: "progress", id, pct }   (0..100 during download)
+//   Worker      → { type: "preloaded", id, ok }  (download finished/failed)
 //   Worker      → { type: "done", id, ok, alpha?: ArrayBuffer, width,
 //                  height, confidence?, error? } (alpha transferred back)
 //
 // The model loads lazily on the first request and is kept for the session.
 // Any failure posts ok:false and the caller falls back to the custom engine.
 
-type MatteRequest = {
-  type: "matte";
-  id: number;
-  bitmap: ImageBitmap;
-};
+type MatteRequest =
+  | { type: "matte"; id: number; bitmap: ImageBitmap }
+  // "preload" starts the download without asking for a matte. It exists so a
+  // background warmup never occupies the single request slot — a photo the
+  // user drops while the model is still streaming must not be pushed onto the
+  // fallback engine just because a warmup happened to be in flight.
+  | { type: "preload"; id: number };
 
 // STATIC import on purpose: a dynamic import() would make Rollup code-split
 // the worker bundle, and Vite's default worker format (iife) does not support
@@ -97,6 +101,15 @@ async function runMatte(
 
 self.addEventListener("message", (e: MessageEvent) => {
   const req = e.data as MatteRequest;
+  if (req?.type === "preload") {
+    // loadPipeline caches its promise, so a "matte" arriving mid-download
+    // awaits the very same work: no duplicate fetch, and none of the warmup's
+    // download time is wasted.
+    void loadPipeline().then((pipe) =>
+      post({ type: "preloaded", id: req.id, ok: pipe !== null }),
+    );
+    return;
+  }
   if (req?.type !== "matte") return;
   void (async () => {
     const pipe = await loadPipeline();

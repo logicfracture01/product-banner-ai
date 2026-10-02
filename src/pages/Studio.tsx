@@ -18,11 +18,11 @@ import {
   type Placement,
   type RatioId,
 } from "@/lib/pipeline/banner";
-import { getDemoBefore } from "@/lib/pipeline/demo";
+import { getDemoBefore, DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
 import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
 import { matteToCutout } from "@/lib/pipeline/aiMatting";
-import { aiMatteAsync, setMattingProgressListener, warmupMatting } from "@/lib/pipeline/aiMattingClient";
+import { aiMatteAsync, preloadMatting, setMattingProgressListener } from "@/lib/pipeline/aiMattingClient";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
@@ -108,32 +108,64 @@ export default function Studio() {
   const previewUrlRef = useRef<string | null>(null);
   /** Monotonic tick so a slow async encode never overwrites a newer one. */
   const encodeSeqRef = useRef(0);
+  /** True while the built-in sample is being processed (enables its fallback). */
+  const isDemoRef = useRef(false);
+  const sampleWRef = useRef(0);
+  const sampleHRef = useRef(0);
+  /** Guards the background model preload so it can only ever start once. */
+  const preloadRef = useRef(false);
   const [cutoutTick, setCutoutTick] = useState(0);
+
+  /** Begin the one-time background model download (also used by "retry"). */
+  const ensureWarm = useCallback(() => {
+    if (preloadRef.current) return;
+    preloadRef.current = true;
+    setAiState((s) => (s === "unloaded" ? "loading" : s));
+    void preloadMatting().then((ok) => {
+      setAiState(ok ? "ready" : "failed");
+      // A failure leaves the engine free to try again via the retry chip.
+      if (!ok) preloadRef.current = false;
+    });
+  }, []);
 
   // Mirror the model download progress into state so the loading chip can
   // show a real percentage instead of a spinner that spins for minutes.
-  // Warmup: start the model download as soon as the studio opens (in a
-  // worker, so the UI stays fully interactive while it streams). If it
-  // can't load, the chip flips to "failed" and uploads still work via the
-  // custom engine — nothing on the page ever blocks on the model.
   useEffect(() => {
     setMattingProgressListener((pct) => {
       if (pct === null) setAiProgress(null);
       else setAiProgress(pct);
     });
-    setAiState((s) => (s === "unloaded" ? "loading" : s));
-    void warmupMatting().then((ok) => {
-      setAiState(ok ? "ready" : "failed");
-    });
     return () => setMattingProgressListener(null);
   }, []);
+
+  // Warm the model on FIRST INTENT, never on mount.
+  //
+  // Warming on mount charged every /studio visitor ~549 KB of worker JS, ~27 MB
+  // of ONNX WASM and ~60 MB of BiRefNet weights before they touched anything —
+  // punishing on exactly the phone-shot audience this app is built for. Waiting
+  // for the earliest real sign of a session (a click or a keypress) still gives
+  // the download a head start over the action that follows it, while someone
+  // who lands, reads and leaves pays nothing at all.
+  //
+  // Drag-and-drop is deliberately not a trigger: the drop itself loads a photo
+  // and calls aiMatteAsync, and preloadMatting does not take the request slot,
+  // so that first photo still gets the full AI path either way.
+  useEffect(() => {
+    const onIntent = () => ensureWarm();
+    window.addEventListener("pointerdown", onIntent, { once: true, passive: true });
+    window.addEventListener("keydown", onIntent, { once: true, passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", onIntent);
+      window.removeEventListener("keydown", onIntent);
+    };
+  }, [ensureWarm]);
 
   // Release the preview blob URL when leaving the studio so the image isn't
   // pinned in memory by a revoked-forever object URL.
   useEffect(
     () => () => {
       encodeSeqRef.current++;
-      if (previewUrlRef.current) {
+      if (previewUrlRef.current?.startsWith("blob:")) {
         URL.revokeObjectURL(previewUrlRef.current);
         previewUrlRef.current = null;
       }
@@ -154,6 +186,7 @@ export default function Studio() {
    */
   const loadFile = useCallback(async (file: File) => {
     if (!file.type.startsWith("image/")) return;
+    isDemoRef.current = false;
     setStage("processing");
     setFileName(file.name);
     try {
@@ -286,6 +319,19 @@ export default function Studio() {
         cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
       }
 
+      // 3) safety net: a whole-frame or near-empty cutout can't produce a
+      // usable banner. For the built-in sample the laptop's position is known
+      // exactly (the scene is deterministic), so fall back to that box rather
+      // than dropping the user on an error screen.
+      if (
+        isDemoRef.current &&
+        isDegenerateCutout(cutout.box, w, h) &&
+        w === sampleWRef.current &&
+        h === sampleHRef.current
+      ) {
+        cutout = boxCutout(rgba, w, h, DEMO_FALLBACK_BOX);
+      }
+
       const { box } = cutout;
       cutoutRef.current = cutout;
       setConfidence(cutout.confidence);
@@ -321,38 +367,33 @@ export default function Studio() {
 
   /**
    * Loads the built-in demo photo (a procedurally generated "laptop on a
-   * sunlit deck" shot) and runs the exact same pipeline as a real upload.
-   *
-   * This is the zero-friction path for judges/demo: one click shows the
-   * full before/after value without anyone needing a photo handy.
+   * sunlit deck" shot) and runs the EXACT same pipeline as a real upload —
+   * it goes through {@link ingestBitmap}, so downscale, detail boost and
+   * matting behave identically to a user's own file.
    */
   const loadSample = useCallback(async () => {
     setStage("processing");
     setFileName("sample-laptop-on-deck.jpg");
     try {
-      const url = getDemoBefore();
+      setBeforeUrl(getDemoBefore());
       const img = new Image();
       await new Promise<void>((res, rej) => {
         img.onload = () => res();
         img.onerror = () => rej(new Error("sample failed"));
-        img.src = url;
+        img.src = getDemoBefore();
       });
-      const cv = document.createElement("canvas");
-      cv.width = img.naturalWidth;
-      cv.height = img.naturalHeight;
-      const ctx = cv.getContext("2d", { willReadFrequently: true })!;
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, cv.width, cv.height);
-      sourceRef.current = { data, width: cv.width, height: cv.height };
-      setBeforeUrl(url);
-      const sampleBmp = await createImageBitmap(cv);
-      await new Promise((r) => setTimeout(r, 30));
-      runSegment(data.data, cv.width, cv.height, tolerance, sampleBmp);
+      // Remember the native sample size so the fallback box (which is in scene
+      // pixels) can only be applied when the pixels weren't rescaled.
+      sampleWRef.current = img.naturalWidth;
+      sampleHRef.current = img.naturalHeight;
+      isDemoRef.current = true;
+      const bitmap = await createImageBitmap(img);
+      await ingestBitmap(bitmap);
     } catch (err) {
       console.error(err);
       setStage("error");
     }
-  }, [tolerance]);
+  }, []);
 
   // ---- render loop -------------------------------------------------------
   // Three caches keep slider dragging at 60fps on a 1080×1350 canvas:
@@ -462,6 +503,7 @@ export default function Studio() {
   ]);
 
   const reset = () => {
+    isDemoRef.current = false;
     cutoutRef.current = null;
     sourceRef.current = null;
     canvasRef.current = null;
@@ -469,7 +511,7 @@ export default function Studio() {
     baseCacheRef.current = null;
     previewCanvasRef.current = null;
     encodeSeqRef.current++;
-    if (previewUrlRef.current) {
+    if (previewUrlRef.current?.startsWith("blob:")) {
       URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = null;
     }
@@ -627,9 +669,9 @@ export default function Studio() {
             onClick={() => {
               // Retry the model load in the background; the custom engine
               // keeps working meanwhile either way.
-              setAiState("loading");
               setAiProgress(null);
-              void warmupMatting().then((ok) => setAiState(ok ? "ready" : "failed"));
+              preloadRef.current = false;
+              ensureWarm();
             }}
             className="underline decoration-dotted underline-offset-2 hover:text-[#5c430d]"
           >
@@ -1327,16 +1369,27 @@ export default function Studio() {
                   >
                     {view === "compare" ? (
                       <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
-                    ) : (
-                      <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/40">
-                        <img
-                          src={(view === "after" ? afterUrl : beforeUrl) ?? undefined}
-                          alt={view === "after" ? "Finished banner" : "Original photo"}
-                          className="block w-full"
-                          draggable={false}
-                        />
-                      </div>
-                    )}
+                    ) : (() => {
+                        const src = view === "after" ? afterUrl : beforeUrl;
+                        return src ? (
+                          <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/40">
+                            <img
+                              src={src}
+                              alt={view === "after" ? "Finished banner" : "Original photo"}
+                              className="block w-full"
+                              draggable={false}
+                            />
+                          </div>
+                        ) : (
+                          // No bitmap yet (first render / right after reset):
+                          // hold the box with a shimmer instead of a broken img.
+                          <div
+                            role="status"
+                            aria-label="Preview rendering"
+                            className="shimmer aspect-[4/5] w-full rounded-xl border border-border/70"
+                          />
+                        );
+                      })()}
                   </div>
                   <p className="mt-3 text-center text-xs text-muted-foreground">
                     {view === "compare"
@@ -1400,14 +1453,19 @@ function emitPreview(
   const ph = Math.max(1, Math.round((sh / sw) * pw));
   const seq = ++seqRef.current;
 
-  const commit = (url: string) => {
-    // A newer tick already produced a preview — drop this stale encode.
-    if (seq !== seqRef.current) return;
+  // Publish a preview. If a newer tick already won, the URL handed to us is
+  // orphaned — revoke it immediately, otherwise every dropped frame during a
+  // slider drag leaks a ~40 KB blob for the lifetime of the document.
+  const commit = (url: string, isBlob: boolean) => {
+    if (seq !== seqRef.current) {
+      if (isBlob) URL.revokeObjectURL(url);
+      return;
+    }
     const prev = urlRef.current;
     urlRef.current = url;
     setUrl(url);
     // Blob URLs are retained until revoked; free the one we just replaced.
-    if (prev && prev !== url) URL.revokeObjectURL(prev);
+    if (prev && prev !== url && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
   };
 
   if (typeof OffscreenCanvas !== "undefined") {
@@ -1420,15 +1478,15 @@ function emitPreview(
         octx.drawImage(source, 0, 0, pw, ph);
         void oc
           .convertToBlob({ type: "image/jpeg", quality: 0.88 })
-          .then((blob) => commit(URL.createObjectURL(blob)))
-          .catch(() => commit(syncPreview(source, sw, pw, fallbackRef)));
+          .then((blob) => commit(URL.createObjectURL(blob), true))
+          .catch(() => commit(syncPreview(source, sw, pw, fallbackRef), false));
         return;
       }
     } catch {
       /* fall through to the synchronous path */
     }
   }
-  commit(syncPreview(source, sw, pw, fallbackRef));
+  commit(syncPreview(source, sw, pw, fallbackRef), false);
 }
 
 /** Synchronous preview encode fallback (reuses one canvas across ticks). */

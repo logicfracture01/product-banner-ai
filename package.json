@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "bun test tests/",
+    "check": "bun run typecheck && bun test tests/ && bun run build",
+    "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "preview": "vite preview"

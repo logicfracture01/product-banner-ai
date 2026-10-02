@@ -24,7 +24,7 @@ import {
   Wand2,
   ZoomIn,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
 /** Shared reveal motion: one language for every entrance on the page. */
@@ -40,6 +40,20 @@ const stagger = (i: number) => ({
   transition: { ...reveal.transition, delay: 0.06 * i },
 });
 
+/**
+ * Yield to the browser so queued paint/input work runs first. Prefers
+ * `requestIdleCallback` (real idle time) and falls back to a macrotask.
+ */
+function afterPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => resolve(), { timeout: 250 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 export default function Landing() {
   const [before, setBefore] = useState<string | null>(null);
   const [after, setAfter] = useState<string | null>(null);
@@ -47,27 +61,36 @@ export default function Landing() {
 
   useEffect(() => {
     let alive = true;
+    let revoke: (() => void) | null = null;
     (async () => {
       try {
-        // let the page paint first
-        await new Promise((r) => setTimeout(r, 120));
+        // Keep the first paint completely free: the demo builds an 860×645
+        // scene, segments it and composites a 1080×1350 banner. None of that
+        // should compete with the hero painting.
+        await afterPaint();
         const b = getDemoBefore();
         if (!alive) return;
         setBefore(b);
-        const a = await renderDemoAfter(DEMO_PLACE, {
+        await afterPaint();
+        const render = await renderDemoAfter(DEMO_PLACE, {
           backdrop: "studio",
           shadow: DEFAULT_SHADOW,
         });
-        if (!alive) return;
-        setAfter(a);
+        if (!alive) {
+          render.revoke();
+          return;
+        }
+        revoke = render.revoke;
+        setAfter(render.url);
         setDemoState("ready");
       } catch (err) {
         console.error("demo pipeline failed", err);
-        setDemoState("error");
+        if (alive) setDemoState("error");
       }
     })();
     return () => {
       alive = false;
+      revoke?.();
     };
   }, []);
 
@@ -307,20 +330,25 @@ function MarketStrip() {
     "Amazon · 1:1",
     "Etsy shop · 16:9",
   ];
+  // Two identical tracks each translating -100% of their own width: the seam
+  // lands exactly on the copy boundary, so the loop has no visible jump.
+  const track = (key: string) => (
+    <div className="animate-marquee flex shrink-0 items-center" aria-hidden={key === "b"}>
+      {items.map((t) => (
+        <span
+          key={t}
+          className="inline-flex items-center gap-2.5 px-5 whitespace-nowrap text-[13px] font-medium text-muted-foreground"
+        >
+          <Check className="size-3.5 text-primary" />
+          {t}
+        </span>
+      ))}
+    </div>
+  );
   return (
     <section className="border-y border-border/60 bg-card/40">
       <div className="relative flex overflow-hidden py-4">
-        <div className="animate-marquee flex shrink-0 items-center gap-10 pr-10">
-          {[...items, ...items].map((t, i) => (
-            <span
-              key={t + i}
-              className="inline-flex items-center gap-2.5 whitespace-nowrap text-[13px] font-medium text-muted-foreground"
-            >
-              <Check className="size-3.5 text-primary" />
-              {t}
-            </span>
-          ))}
-        </div>
+        <div className="flex min-w-0 shrink-0">{track("a")}{track("b")}</div>
         <div
           aria-hidden
           className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-background to-transparent"

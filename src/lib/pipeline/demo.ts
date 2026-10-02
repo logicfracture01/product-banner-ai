@@ -121,7 +121,7 @@ export function getDemoBefore(): string {
 export async function renderDemoAfter(
   place: { x: number; y: number; scale: number },
   opts: { backdrop: string; shadow: import("./shadow").ShadowOptions },
-): Promise<string> {
+): Promise<DemoRender> {
   const before = getDemoBefore();
   const img = new Image();
   await new Promise<void>((res, rej) => {
@@ -140,13 +140,9 @@ export async function renderDemoAfter(
   const { segment } = await import("./segment");
   const cutout = segment(data.data, cv.width, cv.height, { tolerance: 30 });
 
-  // The hero must never show a broken demo. If the segmenter grabbed the whole
-  // frame (or almost nothing), fall back to the laptop's known bounding box —
-  // the scene is procedural and deterministic, so that box is exact.
-  const b = cutout.box;
-  const degenerate =
-    (b.w > cv.width * 0.9 && b.h > cv.height * 0.9) || b.w < cv.width * 0.06;
-  const finalCutout = degenerate
+  // Never ship a broken demo: a degenerate cutout falls back to the laptop's
+  // known bounding box.
+  const finalCutout = isDegenerateCutout(cutout.box, cv.width, cv.height)
     ? boxCutout(data.data, cv.width, cv.height, DEMO_FALLBACK_BOX)
     : cutout;
 
@@ -160,7 +156,46 @@ export async function renderDemoAfter(
     ratio: "4:5",
     shadow: opts.shadow,
   });
-  return out.toDataURL("image/png");
+
+  return encodePreview(out, out.width, out.height, 0.92);
+}
+
+/**
+ * Encode a full-resolution canvas for on-screen display.
+ *
+ * `toDataURL("image/png")` on a 1080×1350 canvas costs ~150ms of blocking
+ * main-thread base64 encoding and produces a ~1.5 MB string. `convertToBlob`
+ * encodes off the interaction path and hands back a cheap object URL; the
+ * synchronous JPEG path is only a fallback.
+ */
+export async function encodePreview(
+  source: HTMLCanvasElement,
+  sw: number,
+  sh: number,
+  quality: number,
+): Promise<DemoRender> {
+  const pw = sw;
+  const ph = sh;
+  if (typeof OffscreenCanvas !== "undefined") {
+    try {
+      const oc = new OffscreenCanvas(pw, ph);
+      const octx = oc.getContext("2d");
+      if (octx) {
+        octx.imageSmoothingEnabled = true;
+        octx.imageSmoothingQuality = "high";
+        octx.drawImage(source, 0, 0, pw, ph);
+        const blob = await oc.convertToBlob({ type: "image/jpeg", quality });
+        const url = URL.createObjectURL(blob);
+        return { url, revoke: () => URL.revokeObjectURL(url) };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return {
+    url: source.toDataURL("image/jpeg", quality),
+    revoke: () => {},
+  };
 }
 
 /** Where the laptop lands in the 1080×1350 banner. */
@@ -168,15 +203,42 @@ export const DEMO_PLACE = { x: 540, y: 1010, scale: 0.66 };
 
 /**
  * Bounding box of the laptop inside the procedural scene, in scene pixels.
- * Used only as a safety net for the hero demo if segmentation degenerates.
+ * Used as a safety net wherever the demo photo is cut out — the scene is
+ * procedural and deterministic, so this box is exact.
  */
 export const DEMO_FALLBACK_BOX = { x: 136, y: 154, w: 562, h: 302 };
+
+export type Box = { x: number; y: number; w: number; h: number };
+
+/**
+ * A cutout is *degenerate* when the segmenter grabbed the whole frame
+ * (background leak), or found something too small in either axis to frame as
+ * a banner subject. Both make for a broken result, so callers fall back to
+ * {@link DEMO_FALLBACK_BOX}.
+ *
+ * Thresholds are fractional so the test is scale-invariant, and so a frame
+ * that has already been downscaled by the studio (or upscaled by the detail
+ * boost) is judged identically to the raw scene.
+ *
+ * Exported (and pure) so the hero and the studio sample share one definition
+ * and so it can be unit-tested without a canvas.
+ */
+export function isDegenerateCutout(box: Box, frameW: number, frameH: number): boolean {
+  if (box.w <= 0 || box.h <= 0) return true;
+  // Background leaked across the whole frame.
+  if (box.w >= frameW * 0.9 && box.h >= frameH * 0.9) return true;
+  // Too thin/small on an axis to be a believable subject.
+  return box.w < frameW * 0.08 || box.h < frameH * 0.08;
+}
+
+/** Rendered demo banner plus the revoker for its object URL. */
+export type DemoRender = { url: string; revoke: () => void };
 
 /**
  * Build a soft-edged cutout from a known box. A 2px feather on the corners
  * keeps the fallback from reading as a hard rectangle when it IS used.
  */
-function boxCutout(
+export function boxCutout(
   src: Uint8ClampedArray,
   w: number,
   h: number,
