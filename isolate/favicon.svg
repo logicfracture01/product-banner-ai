@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="beam" x1="14" y1="12" x2="40" y2="46">
+      <stop offset="0" stop-color="#FFD79A"/>
+      <stop offset="0.55" stop-color="#F4B23E"/>
+      <stop offset="1" stop-color="#F0A02C" stop-opacity="0.15"/>
+    </linearGradient>
+    <linearGradient id="slab" x1="22" y1="40" x2="46" y2="52">
+      <stop offset="0" stop-color="#3FE0C8"/>
+      <stop offset="1" stop-color="#17A99A"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="64" y2="64">
+      <stop offset="0" stop-color="#1B262B"/>
+      <stop offset="1" stop-color="#0B1114"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#tile)"/>
+  <path d="M17 15 L33 15 L46 47 L30 47 Z" fill="url(#beam)"/>
+  <rect x="21" y="38" width="27" height="11" rx="3.2" fill="url(#slab)"/>
+  <rect x="14" y="52" width="36" height="2.6" rx="1.3" fill="#ffffff" fill-opacity="0.5"/>
+</svg>

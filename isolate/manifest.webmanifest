@@ -1,0 +1,17 @@
+{
+  "name": "Relight — Product Photo Studio",
+  "short_name": "Relight",
+  "description": "Turn a messy phone photo of a product into a clean, professional listing banner with realistic shadows — entirely on-device.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbfaf8",
+  "theme_color": "#0b1114",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
