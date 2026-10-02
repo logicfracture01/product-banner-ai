@@ -38,7 +38,10 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
+  Columns2,
+  Cpu,
   Download,
+  Image as ImageIcon,
   ImageUp,
   Layers,
   MoveHorizontal,
@@ -90,6 +93,8 @@ export default function Studio() {
   const [aiState, setAiState] = useState<"unloaded" | "loading" | "ready" | "failed">("unloaded");
   /** Model download progress percent (null = indeterminate, e.g. WASM warmup). */
   const [aiProgress, setAiProgress] = useState<number | null>(null);
+  /** Which layer the preview shows: compare slider, finished banner, or source. */
+  const [view, setView] = useState<"compare" | "after" | "before">("compare");
 
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
@@ -97,8 +102,12 @@ export default function Studio() {
   const inputRef = useRef<HTMLInputElement>(null);
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startOffset: number } | null>(null);
-  /** Reused preview-downscale canvas (avoids a new allocation per render tick). */
+  /** Reused preview-downscale canvas (sync JPEG fallback path only). */
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Object URL of the current preview image — revoked when replaced. */
+  const previewUrlRef = useRef<string | null>(null);
+  /** Monotonic tick so a slow async encode never overwrites a newer one. */
+  const encodeSeqRef = useRef(0);
   const [cutoutTick, setCutoutTick] = useState(0);
 
   // Mirror the model download progress into state so the loading chip can
@@ -118,6 +127,19 @@ export default function Studio() {
     });
     return () => setMattingProgressListener(null);
   }, []);
+
+  // Release the preview blob URL when leaving the studio so the image isn't
+  // pinned in memory by a revoked-forever object URL.
+  useEffect(
+    () => () => {
+      encodeSeqRef.current++;
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+    },
+    [],
+  );
 
   // ---- load a File -------------------------------------------------------
 
@@ -298,15 +320,15 @@ export default function Studio() {
   // ---- load the procedural sample ---------------------------------------
 
   /**
-   * Loads the built-in demo photo (a procedurally generated "messy mug"
-   * shot) and runs the exact same pipeline as a real upload.
+   * Loads the built-in demo photo (a procedurally generated "laptop on a
+   * sunlit deck" shot) and runs the exact same pipeline as a real upload.
    *
    * This is the zero-friction path for judges/demo: one click shows the
    * full before/after value without anyone needing a photo handy.
    */
   const loadSample = useCallback(async () => {
     setStage("processing");
-    setFileName("sample-mug.jpg");
+    setFileName("sample-laptop-on-deck.jpg");
     try {
       const url = getDemoBefore();
       const img = new Image();
@@ -333,14 +355,48 @@ export default function Studio() {
   }, [tolerance]);
 
   // ---- render loop -------------------------------------------------------
-  // Shadow geometry (coverage sweep + filtering) is cached per cutout/placement
-  // and only recomputed when geometry-affecting params change. The strength
-  // (opacity) slider and the contact toggle re-tone-map from the cached
-  // intensity field — nearly free, so the slider stays buttery.
+  // Three caches keep slider dragging at 60fps on a 1080×1350 canvas:
+  //   1. autoPlacement — pure function of cutout + ratio, called on every
+  //      tick and again on every export; memoized per (cutout, ratio).
+  //   2. Shadow geometry (coverage sweep + filtering) — the expensive part.
+  //      Cached per cutout/placement; the strength (opacity) slider and the
+  //      contact toggle only re-tone-map from the cached intensity field.
+  //   3. Preview encode — the downscale runs into an OffscreenCanvas and is
+  //      encoded asynchronously, so the sync JPEG encode (~8ms of jank per
+  //      tick at 648px) happens off the interaction path entirely.
   const shadowCacheRef = useRef<{
     key: string;
     intensity: Float32Array;
   } | null>(null);
+  const baseCacheRef = useRef<{ key: string; base: Placement } | null>(null);
+
+  /** Auto placement for the current cutout + ratio (memoized). */
+  const basePlacement = useCallback(
+    (cutout: Cutout, ratioId: RatioId) => {
+      const key = `${cutoutTick}|${ratioId}`;
+      const hit = baseCacheRef.current;
+      if (hit && hit.key === key) return hit.base;
+      const r = getRatio(ratioId);
+      const base = autoPlacement(cutout, r.w, r.h);
+      baseCacheRef.current = { key, base };
+      return base;
+    },
+    [cutoutTick],
+  );
+
+  /** Base placement + the user's size / baseline / nudge adjustments. */
+  const placeFor = useCallback(
+    (cutout: Cutout, ratioId: RatioId): Placement => {
+      const base = basePlacement(cutout, ratioId);
+      return {
+        x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
+        y: (height / 100) * getRatio(ratioId).h,
+        scale: base.scale * (size / 100),
+      };
+    },
+    [basePlacement, offsetX, height, size],
+  );
+
   useEffect(() => {
     if (stage !== "ready" || !cutoutRef.current) return;
     let raf = 0;
@@ -354,12 +410,7 @@ export default function Studio() {
         out.width = r.w;
         out.height = r.h;
         const ctx = out.getContext("2d")!;
-        const base = autoPlacement(cutout, r.w, r.h);
-        const place: Placement = {
-          x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
-          y: (height / 100) * r.h,
-          scale: base.scale * (size / 100),
-        };
+        const place = placeFor(cutout, ratio);
         ctx.clearRect(0, 0, r.w, r.h);
         if (design) {
           paintDesign(ctx, r.w, r.h, design);
@@ -389,34 +440,39 @@ export default function Studio() {
           shadowCacheRef.current = null;
         }
         drawProduct(ctx, cutout, place);
-        // Preview: downscale + JPEG. PNG of the full 1080x1350 canvas is far
-        // too slow to run on every slider tick; the full-res PNG is re-rendered
-        // at export time instead. The downscale canvas is reused across ticks.
-        const pw = 648;
-        const ph = Math.round((r.h / r.w) * pw);
-        const pcv = previewCanvasRef.current ?? document.createElement("canvas");
-        previewCanvasRef.current = pcv;
-        pcv.width = pw;
-        pcv.height = ph;
-        const pctx = pcv.getContext("2d")!;
-        pctx.imageSmoothingEnabled = true;
-        pctx.imageSmoothingQuality = "high";
-        pctx.drawImage(out, 0, 0, pw, ph);
-        setAfterUrl(pcv.toDataURL("image/jpeg", 0.9));
+        emitPreview(out, r.w, r.h, setAfterUrl, previewUrlRef, encodeSeqRef, previewCanvasRef);
       });
     }, 40);
     return () => {
       clearTimeout(t);
       cancelAnimationFrame(raf);
     };
-  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height, offsetX, design]);
+  }, [
+    stage,
+    cutoutTick,
+    backdrop,
+    ratio,
+    shadow,
+    shadowsOn,
+    size,
+    height,
+    offsetX,
+    design,
+    placeFor,
+  ]);
 
   const reset = () => {
     cutoutRef.current = null;
     sourceRef.current = null;
     canvasRef.current = null;
     shadowCacheRef.current = null;
+    baseCacheRef.current = null;
     previewCanvasRef.current = null;
+    encodeSeqRef.current++;
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
     setStage("empty");
     setBeforeUrl(null);
     setAfterUrl(null);
@@ -478,12 +534,7 @@ export default function Studio() {
     canvas.width = r.w;
     canvas.height = r.h;
     const ctx = canvas.getContext("2d")!;
-    const base = autoPlacement(cutout, r.w, r.h);
-    const place: Placement = {
-      x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
-      y: (height / 100) * r.h,
-      scale: base.scale * (size / 100),
-    };
+    const place = placeFor(cutout, ratio);
     ctx.clearRect(0, 0, r.w, r.h);
     if (design) {
       paintDesign(ctx, r.w, r.h, design);
@@ -509,12 +560,7 @@ export default function Studio() {
     cv.width = r.w;
     cv.height = r.h;
     const ctx = cv.getContext("2d")!;
-    const base = autoPlacement(cutout, r.w, r.h);
-    const place: Placement = {
-      x: base.x + offsetX * base.scale * cutout.box.w * 0.5,
-      y: (height / 100) * r.h,
-      scale: base.scale * (size / 100),
-    };
+    const place = placeFor(cutout, ratio);
     ctx.clearRect(0, 0, r.w, r.h);
     if (design && id === style) {
       // batch export of the CURRENT look keeps the active generated design
@@ -607,6 +653,13 @@ export default function Studio() {
             <Logo size={28} />
           </Link>
           <div className="flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className="mr-1 hidden h-7 gap-1.5 rounded-full border-border/70 px-2.5 text-[11px] font-medium text-muted-foreground lg:inline-flex"
+            >
+              <Cpu className="size-3" />
+              On-device · nothing uploaded
+            </Badge>
             {fileName && (
               <span className="mr-1 hidden max-w-52 truncate text-sm text-muted-foreground sm:block">
                 {fileName}
@@ -1170,11 +1223,36 @@ export default function Studio() {
                   </div>
                 )}
                 <Card className="p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <Badge variant="secondary" className="gap-1.5 rounded-full">
-                      <span className="size-1.5 rounded-full bg-primary" />
-                      Before / after
-                    </Badge>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div
+                      className="inline-flex items-center gap-1 rounded-lg border border-border/70 bg-muted/50 p-1"
+                      role="radiogroup"
+                      aria-label="Preview mode"
+                    >
+                      {(
+                        [
+                          { id: "compare", label: "Compare", Icon: Columns2 },
+                          { id: "after", label: "Banner", Icon: ImageIcon },
+                          { id: "before", label: "Source", Icon: ImageUp },
+                        ] as const
+                      ).map((m) => (
+                        <button
+                          key={m.id}
+                          role="radio"
+                          aria-checked={view === m.id}
+                          onClick={() => setView(m.id)}
+                          className={cn(
+                            "inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all duration-200 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                            view === m.id
+                              ? "bg-card text-foreground shadow-e1"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <m.Icon className="size-3.5" />
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
                     <div className="flex items-center gap-2">
                       {offsetX !== 0 && (
                         <Button
@@ -1247,10 +1325,25 @@ export default function Studio() {
                     }}
                     title="Drag horizontally (or arrow keys) to reposition the product"
                   >
-                    <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
+                    {view === "compare" ? (
+                      <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
+                    ) : (
+                      <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/40">
+                        <img
+                          src={(view === "after" ? afterUrl : beforeUrl) ?? undefined}
+                          alt={view === "after" ? "Finished banner" : "Original photo"}
+                          className="block w-full"
+                          draggable={false}
+                        />
+                      </div>
+                    )}
                   </div>
                   <p className="mt-3 text-center text-xs text-muted-foreground">
-                    Drag the handle to compare · drag the image sideways to reposition · shadows re-render live
+                    {view === "compare"
+                      ? "Drag the handle to compare · drag the image sideways to reposition · shadows re-render live"
+                      : view === "after"
+                        ? "This is the banner you export — drag the image sideways to reposition the product."
+                        : "The original photo. Switch to Compare to see what the engine changed."}
                   </p>
                 </Card>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -1262,7 +1355,7 @@ export default function Studio() {
                   ].map((s) => (
                     <div
                       key={s.k}
-                      className="rounded-xl border border-border/60 bg-card px-4 py-3"
+                      className="edge-top rounded-xl border border-border/60 bg-card px-4 py-3 shadow-e1"
                     >
                       <div className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
                         {s.k}
@@ -1281,6 +1374,80 @@ export default function Studio() {
 }
 
 // ---------------------------------------------------------------- pieces
+
+/**
+ * Downscale the full-resolution banner into a preview image and hand it to
+ * React.
+ *
+ * Prefers `OffscreenCanvas.convertToBlob()`: the JPEG encode then runs off the
+ * interaction path, so dragging the size / shadow sliders stays at 60fps
+ * instead of paying a synchronous ~8ms encode every frame. Falls back to a
+ * reused 2D canvas + `toDataURL` where OffscreenCanvas is unavailable.
+ *
+ * A sequence number guards the async path so a slow encode can never land
+ * after — and overwrite — a newer preview.
+ */
+function emitPreview(
+  source: HTMLCanvasElement,
+  sw: number,
+  sh: number,
+  setUrl: (url: string) => void,
+  urlRef: { current: string | null },
+  seqRef: { current: number },
+  fallbackRef: { current: HTMLCanvasElement | null },
+) {
+  const pw = 648;
+  const ph = Math.max(1, Math.round((sh / sw) * pw));
+  const seq = ++seqRef.current;
+
+  const commit = (url: string) => {
+    // A newer tick already produced a preview — drop this stale encode.
+    if (seq !== seqRef.current) return;
+    const prev = urlRef.current;
+    urlRef.current = url;
+    setUrl(url);
+    // Blob URLs are retained until revoked; free the one we just replaced.
+    if (prev && prev !== url) URL.revokeObjectURL(prev);
+  };
+
+  if (typeof OffscreenCanvas !== "undefined") {
+    try {
+      const oc = new OffscreenCanvas(pw, ph);
+      const octx = oc.getContext("2d");
+      if (octx) {
+        octx.imageSmoothingEnabled = true;
+        octx.imageSmoothingQuality = "high";
+        octx.drawImage(source, 0, 0, pw, ph);
+        void oc
+          .convertToBlob({ type: "image/jpeg", quality: 0.88 })
+          .then((blob) => commit(URL.createObjectURL(blob)))
+          .catch(() => commit(syncPreview(source, sw, pw, fallbackRef)));
+        return;
+      }
+    } catch {
+      /* fall through to the synchronous path */
+    }
+  }
+  commit(syncPreview(source, sw, pw, fallbackRef));
+}
+
+/** Synchronous preview encode fallback (reuses one canvas across ticks). */
+function syncPreview(
+  source: HTMLCanvasElement,
+  sw: number,
+  pw: number,
+  fallbackRef: { current: HTMLCanvasElement | null },
+): string {
+  const pcv = fallbackRef.current ?? document.createElement("canvas");
+  fallbackRef.current = pcv;
+  pcv.width = pw;
+  pcv.height = Math.max(1, Math.round((source.height / sw) * pw));
+  const pctx = pcv.getContext("2d")!;
+  pctx.imageSmoothingEnabled = true;
+  pctx.imageSmoothingQuality = "high";
+  pctx.drawImage(source, 0, 0, pcv.width, pcv.height);
+  return pcv.toDataURL("image/jpeg", 0.88);
+}
 
 /**
  * Labeled slider with a live numeric readout.
@@ -1337,8 +1504,8 @@ function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: ()
       </div>
       <h2 className="mt-5 font-display text-2xl font-semibold">Start with a messy photo</h2>
       <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
-        A mug on a cluttered desk, a jacket on a bed — anything a human could point at.
-        Everything runs on your device; nothing is uploaded.
+        A laptop on a cluttered deck, a jacket on a bed — anything a human could
+        point at. Everything runs on your device; nothing is uploaded.
       </p>
       <div className="mt-6 flex flex-col gap-2 min-[380px]:flex-row">
         <Button onClick={onBrowse} className="min-h-11">
@@ -1371,6 +1538,12 @@ function ProcessingState() {
       <p className="mt-1 text-sm text-muted-foreground">
         Runs entirely on this device — usually takes a couple of seconds.
       </p>
+      {/* Skeleton hints the shape of the result so the wait feels shorter */}
+      <div aria-hidden className="mt-7 w-full max-w-xs space-y-3">
+        <div className="shimmer h-2.5 w-full rounded-full" />
+        <div className="shimmer mx-auto h-2.5 w-3/4 rounded-full" />
+        <div className="shimmer mx-auto h-2.5 w-1/2 rounded-full" />
+      </div>
     </Card>
   );
 }

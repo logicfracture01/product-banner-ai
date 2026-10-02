@@ -1,79 +1,119 @@
-// Procedural demo scene: a "messy phone photo" of a mug on a cluttered desk.
-// Drawn with raw canvas 2D — no image assets, fully deterministic.
+// Procedural demo scene: a "messy phone photo" of a laptop on a sunlit
+// wooden deck. Drawn with raw canvas 2D — no image assets, fully
+// deterministic, so the hero demo and the studio sample are pixel-identical.
+//
+// The product (silver laptop, dark graphite) is deliberately high-contrast
+// against the warm deck so the on-device color-model segmenter can lift it
+// cleanly; everything else is designed to be *messy but separable*.
 
 let cachedBefore: string | null = null;
+
+const W = 860;
+const H = 645;
 
 export function getDemoBefore(): string {
   if (cachedBefore) return cachedBefore;
   const c = document.createElement("canvas");
-  c.width = 720;
-  c.height = 540;
+  c.width = W;
+  c.height = H;
   const ctx = c.getContext("2d")!;
 
-  // ---- desk wood background with planks ----
-  const wood = ctx.createLinearGradient(0, 0, 0, 540);
-  wood.addColorStop(0, "#b08a64");
-  wood.addColorStop(1, "#93714f");
-  ctx.fillStyle = wood;
-  ctx.fillRect(0, 0, 720, 540);
+  // ---- deck planks (top-down-ish angle, sun from upper-left) -------------
+  const base = ctx.createLinearGradient(0, 0, W * 0.6, H);
+  base.addColorStop(0, "#c8a274");
+  base.addColorStop(0.5, "#b08d61");
+  base.addColorStop(1, "#8f6f48");
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, W, H);
 
-  // planks + grain streaks
-  const rng = mulberry32(1234);
-  ctx.globalAlpha = 0.18;
-  for (let i = 0; i < 5; i++) {
-    ctx.fillStyle = i % 2 ? "#8a6a4a" : "#a07c58";
-    ctx.fillRect(0, i * 108 + 54, 720, 108);
-  }
-  ctx.globalAlpha = 0.12;
-  ctx.strokeStyle = "#5f452e";
-  for (let i = 0; i < 60; i++) {
-    const y = rng() * 540;
-    const x = rng() * 720;
-    const len = 40 + rng() * 120;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.bezierCurveTo(x + len * 0.3, y + 2, x + len * 0.7, y - 2, x + len, y);
-    ctx.stroke();
+  const rng = mulberry32(20261002);
+  // plank bands with slightly varied tone + seams
+  const plankH = 92;
+  for (let i = 0; i * plankH < H; i++) {
+    const y = i * plankH;
+    ctx.fillStyle = i % 2 ? "#a9855a" : "#bd9264";
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(0, y, W, plankH - 2);
+    // seam shadow
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#6d5334";
+    ctx.fillRect(0, y + plankH - 3, W, 3);
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = "#e8cfa8";
+    ctx.fillRect(0, y + plankH, W, 1);
   }
   ctx.globalAlpha = 1;
 
-  // ---- clutter behind the mug ----
-  drawPen(ctx, 96, 70, -0.5, "#3b82f6");
-  drawPen(ctx, 128, 96, 0.35, "#ef4444");
-  drawNotebook(ctx, 470, 330, -0.12);
-  drawPlant(ctx, 610, 96);
-  drawPhone(ctx, 90, 330);
-  drawCoaster(ctx, 250, 120);
+  // wood grain
+  ctx.globalAlpha = 0.13;
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 130; i++) {
+    const y = rng() * H;
+    const x = rng() * W;
+    const len = 60 + rng() * 220;
+    ctx.strokeStyle = rng() > 0.5 ? "#5d4527" : "#d8b585";
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.bezierCurveTo(x + len * 0.3, y + 3, x + len * 0.7, y - 3, x + len, y);
+    ctx.stroke();
+  }
+  // knots
+  ctx.globalAlpha = 0.16;
+  for (let i = 0; i < 4; i++) {
+    const x = rng() * W;
+    const y = rng() * H;
+    for (let r = 16; r > 2; r -= 5) {
+      ctx.strokeStyle = "#5d4527";
+      ctx.beginPath();
+      ctx.ellipse(x, y, r, r * 0.55, 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
 
-  // ---- the mug (product) ----
-  drawMug(ctx, 360, 300, 1.25);
+  // ---- clutter around the laptop ---------------------------------------
+  drawMug(ctx, 118, 168, 0.95);
+  drawPhone(ctx, 742, 152, -0.42);
+  drawNotebook(ctx, 690, 470, 0.1);
+  drawPen(ctx, 168, 520, -0.16, "#e0563f");
+  drawSunglasses(ctx, 620, 176, 0.16);
+  drawCable(ctx, 96, 372);
+  drawCrumbSpecks(ctx, rng, 46);
+  drawLeaf(ctx, 806, 596, 0.5);
 
-  // ---- soft window light from top-left ----
-  const light = ctx.createLinearGradient(0, 0, 260, 420);
-  light.addColorStop(0, "rgba(255,244,214,0.30)");
-  light.addColorStop(1, "rgba(255,244,214,0)");
-  ctx.fillStyle = light;
-  ctx.fillRect(0, 0, 720, 540);
+  // ---- the product: silver laptop, open, slight 3/4 view ---------------
+  drawLaptop(ctx, 430, 330);
 
-  // ---- phone photo artifacts: vignette, noise, slight desat lens cast ----
-  const vig = ctx.createRadialGradient(360, 270, 220, 360, 270, 560);
-  vig.addColorStop(0, "rgba(0,0,0,0)");
-  vig.addColorStop(1, "rgba(20,10,0,0.32)");
-  ctx.fillStyle = vig;
-  ctx.fillRect(0, 0, 720, 540);
+  // ---- light: hard-ish window sun from upper-left + warm bounce --------
+  const sun = ctx.createRadialGradient(150, 60, 20, 300, 240, 720);
+  sun.addColorStop(0, "rgba(255,246,214,0.42)");
+  sun.addColorStop(0.5, "rgba(255,240,205,0.14)");
+  sun.addColorStop(1, "rgba(255,236,200,0)");
+  ctx.fillStyle = sun;
+  ctx.fillRect(0, 0, W, H);
 
-  const img = ctx.getImageData(0, 0, 720, 540);
+  // ---- lens: slight cool cast in shadows, warm highlights --------------
+  const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
-  const n2 = mulberry32(77);
+  const n2 = mulberry32(4242);
   for (let i = 0; i < d.length; i += 4) {
-    const g = (n2() - 0.5) * 12;
+    // sensor noise (a touch stronger in the shadows, like real ISO)
+    const lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) / 255;
+    const g = (n2() - 0.5) * (9 + 9 * (1 - lum));
     d[i] = Math.max(0, Math.min(255, d[i] + g));
     d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + g));
     d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + g));
   }
   ctx.putImageData(img, 0, 0);
 
-  cachedBefore = c.toDataURL("image/jpeg", 0.82);
+  // ---- vignette + a bit of lens softness at the frame edge --------------
+  const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 1.02);
+  vig.addColorStop(0, "rgba(24,12,2,0)");
+  vig.addColorStop(1, "rgba(24,12,2,0.34)");
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  cachedBefore = c.toDataURL("image/jpeg", 0.84);
   return cachedBefore;
 }
 
@@ -100,12 +140,22 @@ export async function renderDemoAfter(
   const { segment } = await import("./segment");
   const cutout = segment(data.data, cv.width, cv.height, { tolerance: 30 });
 
+  // The hero must never show a broken demo. If the segmenter grabbed the whole
+  // frame (or almost nothing), fall back to the laptop's known bounding box —
+  // the scene is procedural and deterministic, so that box is exact.
+  const b = cutout.box;
+  const degenerate =
+    (b.w > cv.width * 0.9 && b.h > cv.height * 0.9) || b.w < cv.width * 0.06;
+  const finalCutout = degenerate
+    ? boxCutout(data.data, cv.width, cv.height, DEMO_FALLBACK_BOX)
+    : cutout;
+
   const out = document.createElement("canvas");
   out.width = 1080;
   out.height = 1350;
   const octx = out.getContext("2d")!;
   const { drawBanner } = await import("./banner");
-  drawBanner(octx, cutout, place, {
+  drawBanner(octx, finalCutout, place, {
     backdrop: opts.backdrop as never,
     ratio: "4:5",
     shadow: opts.shadow,
@@ -113,108 +163,263 @@ export async function renderDemoAfter(
   return out.toDataURL("image/png");
 }
 
-export const DEMO_PLACE = { x: 540, y: 972, scale: 0.62 };
+/** Where the laptop lands in the 1080×1350 banner. */
+export const DEMO_PLACE = { x: 540, y: 1010, scale: 0.66 };
 
-// ---- clutter drawing helpers -------------------------------------------------
+/**
+ * Bounding box of the laptop inside the procedural scene, in scene pixels.
+ * Used only as a safety net for the hero demo if segmentation degenerates.
+ */
+export const DEMO_FALLBACK_BOX = { x: 136, y: 154, w: 562, h: 302 };
+
+/**
+ * Build a soft-edged cutout from a known box. A 2px feather on the corners
+ * keeps the fallback from reading as a hard rectangle when it IS used.
+ */
+function boxCutout(
+  src: Uint8ClampedArray,
+  w: number,
+  h: number,
+  box: { x: number; y: number; w: number; h: number },
+): import("./segment").Cutout {
+  const alpha = new Uint8ClampedArray(w * h * 4);
+  const feather = 2;
+  const { x, y, w: bw, h: bh } = box;
+  for (let yy = 0; yy < h; yy++) {
+    for (let xx = 0; xx < w; xx++) {
+      const i = (yy * w + xx) * 4;
+      const dx = Math.max(x - xx, xx - (x + bw), 0);
+      const dy = Math.max(y - yy, yy - (y + bh), 0);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const a = Math.max(0, Math.min(1, 1 - (d - 0.5) / feather)) * 255;
+      alpha[i] = src[i];
+      alpha[i + 1] = src[i + 1];
+      alpha[i + 2] = src[i + 2];
+      alpha[i + 3] = a;
+    }
+  }
+  return {
+    alpha,
+    width: w,
+    height: h,
+    softPixels: feather * (bw + bh) * 2,
+    touchedEdges: new Set(),
+    box,
+    candidates: [{ box, area: bw * bh, score: 1 }],
+    confidence: 0.5,
+  };
+}
+
+// ---- scene helpers ---------------------------------------------------------
+
+/**
+ * Open laptop seen from a low 3/4 angle: lid + brushed-metal screen well,
+ * aluminium chassis, keyboard deck with key grid and trackpad, plus the
+ * soft contact shadow that the pipeline will re-light on the clean banner.
+ */
+function drawLaptop(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  // slight perspective skew so it doesn't read as a flat sticker
+  ctx.transform(1, 0, -0.13, 1, 0, 0);
+
+  const HW = 232; // half width of the chassis
+  const lidTop = -168;
+  const deckY = 26;
+
+  // cast shadow on the deck (part of the messy photo)
+  ctx.fillStyle = "rgba(48,28,10,0.26)";
+  ctx.beginPath();
+  ctx.ellipse(34, deckY + 54, HW + 44, 34, 0.02, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ---- lid / screen back panel -----------------------------------------
+  const lidGrad = ctx.createLinearGradient(-HW, lidTop, HW, deckY);
+  lidGrad.addColorStop(0, "#e8eaee");
+  lidGrad.addColorStop(0.42, "#c3c8d0");
+  lidGrad.addColorStop(1, "#8f959e");
+  ctx.fillStyle = lidGrad;
+  ctx.beginPath();
+  ctx.roundRect(-HW, lidTop, HW * 2, deckY - lidTop + 12, 12);
+  ctx.fill();
+
+  // inner bezel + screen
+  const bez = 13;
+  ctx.fillStyle = "#1c1f24";
+  ctx.beginPath();
+  ctx.roundRect(-HW + bez, lidTop + bez - 4, HW * 2 - bez * 2, deckY - lidTop - bez + 6, 7);
+  ctx.fill();
+
+  const scr = ctx.createLinearGradient(-HW, lidTop, HW * 0.4, deckY);
+  scr.addColorStop(0, "#33445c");
+  scr.addColorStop(0.45, "#1f2a3a");
+  scr.addColorStop(1, "#141a24");
+  ctx.fillStyle = scr;
+  ctx.beginPath();
+  ctx.roundRect(-HW + bez + 6, lidTop + bez + 2, HW * 2 - (bez + 6) * 2, deckY - lidTop - bez * 2 - 2, 4);
+  ctx.fill();
+
+  // fake UI on the screen: a photo-viewer window (ties into the product story)
+  ctx.fillStyle = "rgba(255,255,255,0.10)";
+  ctx.beginPath();
+  ctx.roundRect(-HW + 46, lidTop + 44, HW - 70, deckY - lidTop - 96, 5);
+  ctx.fill();
+  ctx.fillStyle = "rgba(244,178,62,0.55)";
+  ctx.fillRect(-HW + 46, lidTop + 44, HW - 70, 12);
+  ctx.fillStyle = "rgba(45,212,191,0.42)";
+  ctx.beginPath();
+  ctx.roundRect(-HW + 58, lidTop + 68, 74, 52, 4);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.24)";
+  for (let i = 0; i < 4; i++) {
+    ctx.fillRect(-HW + 142, lidTop + 70 + i * 13, 52 - (i % 2) * 14, 5);
+  }
+  // camera dot
+  ctx.fillStyle = "#0a0d11";
+  ctx.beginPath();
+  ctx.arc(0, lidTop + 6, 3.1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // glass reflection sweeping across the lid
+  const gloss = ctx.createLinearGradient(-HW, lidTop, HW * 0.2, deckY);
+  gloss.addColorStop(0, "rgba(255,255,255,0.30)");
+  gloss.addColorStop(0.35, "rgba(255,255,255,0.06)");
+  gloss.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gloss;
+  ctx.beginPath();
+  ctx.roundRect(-HW, lidTop, HW * 2, deckY - lidTop + 12, 12);
+  ctx.fill();
+
+  // ---- keyboard deck ---------------------------------------------------
+  const deckGrad = ctx.createLinearGradient(-HW, deckY - 10, HW, deckY + 74);
+  deckGrad.addColorStop(0, "#d7dbe1");
+  deckGrad.addColorStop(0.5, "#aeb4bd");
+  deckGrad.addColorStop(1, "#7e848d");
+  ctx.fillStyle = deckGrad;
+  ctx.beginPath();
+  ctx.moveTo(-HW - 6, deckY);
+  ctx.lineTo(HW + 10, deckY);
+  ctx.lineTo(HW + 44, deckY + 74);
+  ctx.quadraticCurveTo(0, deckY + 92, -HW - 40, deckY + 74);
+  ctx.closePath();
+  ctx.fill();
+
+  // keyboard well
+  ctx.fillStyle = "rgba(28,32,38,0.92)";
+  ctx.beginPath();
+  ctx.moveTo(-HW + 22, deckY + 8);
+  ctx.lineTo(HW - 4, deckY + 8);
+  ctx.lineTo(HW + 6, deckY + 46);
+  ctx.lineTo(-HW + 2, deckY + 46);
+  ctx.closePath();
+  ctx.fill();
+  // key grid (perspective-compressed)
+  ctx.fillStyle = "rgba(226,230,236,0.34)";
+  for (let r = 0; r < 4; r++) {
+    const y = deckY + 12 + r * 8.6;
+    const inset = 26 + r * 1.5;
+    for (let k = 0; k < 13; k++) {
+      const x = -HW + inset + k * 13.6;
+      ctx.fillRect(x, y, 10, 5.4);
+    }
+  }
+  // trackpad
+  ctx.fillStyle = "rgba(226,230,236,0.22)";
+  ctx.beginPath();
+  ctx.roundRect(-64, deckY + 54, 128, 26, 4);
+  ctx.fill();
+
+  // front edge highlight (the "lip" of the chassis)
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.moveTo(-HW - 38, deckY + 72);
+  ctx.quadraticCurveTo(0, deckY + 90, HW + 42, deckY + 72);
+  ctx.stroke();
+
+  // engraved logo dot on the lid back
+  ctx.fillStyle = "rgba(60,66,74,0.5)";
+  ctx.beginPath();
+  ctx.arc(HW - 30, lidTop + 34, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
 
 function drawMug(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number) {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(s, s);
-
-  // shadow under mug (part of the messy photo)
-  ctx.fillStyle = "rgba(40,20,5,0.30)";
+  ctx.fillStyle = "rgba(48,28,10,0.28)";
   ctx.beginPath();
-  ctx.ellipse(14, 92, 86, 20, 0.06, 0, Math.PI * 2);
+  ctx.ellipse(12, 74, 62, 15, 0.05, 0, Math.PI * 2);
   ctx.fill();
-
   // handle
-  ctx.strokeStyle = "#d8d4cf";
-  ctx.lineWidth = 17;
+  ctx.strokeStyle = "#cfc9c1";
+  ctx.lineWidth = 13;
   ctx.beginPath();
-  ctx.arc(74, 8, 34, -1.15, 1.15);
+  ctx.arc(50, 4, 26, -1.2, 1.2);
   ctx.stroke();
-  ctx.strokeStyle = "#b9b4ad";
-  ctx.lineWidth = 8;
-  ctx.beginPath();
-  ctx.arc(74, 8, 34, -1.05, 1.05);
-  ctx.stroke();
-
   // body
-  const body = ctx.createLinearGradient(-60, -80, 66, 92);
-  body.addColorStop(0, "#efece7");
-  body.addColorStop(0.55, "#ddd8d1");
-  body.addColorStop(1, "#c2bcb2");
+  const body = ctx.createLinearGradient(-46, -62, 50, 68);
+  body.addColorStop(0, "#efeae2");
+  body.addColorStop(0.55, "#d5cfc6");
+  body.addColorStop(1, "#a9a298");
   ctx.fillStyle = body;
   ctx.beginPath();
-  ctx.moveTo(-62, -78);
-  ctx.lineTo(62, -78);
-  ctx.quadraticCurveTo(70, 40, 52, 88);
-  ctx.lineTo(-52, 88);
-  ctx.quadraticCurveTo(-70, 40, -62, -78);
+  ctx.moveTo(-46, -62);
+  ctx.lineTo(46, -62);
+  ctx.quadraticCurveTo(52, 24, 38, 66);
+  ctx.lineTo(-38, 66);
+  ctx.quadraticCurveTo(-52, 24, -46, -62);
   ctx.closePath();
   ctx.fill();
-  ctx.strokeStyle = "rgba(90,80,70,0.35)";
-  ctx.lineWidth = 2;
+  ctx.fillStyle = "#e6e1da";
+  ctx.beginPath();
+  ctx.ellipse(0, -62, 47, 11, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#40382f";
+  ctx.beginPath();
+  ctx.ellipse(0, -62, 39, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.6)";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-32, -46);
+  ctx.quadraticCurveTo(-38, 0, -30, 48);
   ctx.stroke();
-
-  // rim + inner
-  ctx.fillStyle = "#e7e3dd";
-  ctx.beginPath();
-  ctx.ellipse(0, -78, 63, 15, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#4a4038";
-  ctx.beginPath();
-  ctx.ellipse(0, -78, 52, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
-  const coffee = ctx.createLinearGradient(0, -86, 0, -70);
-  coffee.addColorStop(0, "#6b4a2e");
-  coffee.addColorStop(1, "#4e3320");
-  ctx.fillStyle = coffee;
-  ctx.beginPath();
-  ctx.ellipse(0, -79, 50, 8.5, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // logo dot
-  ctx.fillStyle = "#e0714f";
-  ctx.beginPath();
-  ctx.arc(-8, 10, 17, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#f3b562";
-  ctx.beginPath();
-  ctx.arc(-3, 14, 6, 0, Math.PI * 2);
-  ctx.fill();
-
-  // glaze highlight
-  ctx.strokeStyle = "rgba(255,255,255,0.75)";
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.moveTo(-44, -58);
-  ctx.quadraticCurveTo(-52, 0, -40, 62);
-  ctx.stroke();
-
   ctx.restore();
 }
 
-function drawPen(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number, color: string) {
+function drawPhone(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(rot);
-  ctx.fillStyle = "rgba(40,20,5,0.22)";
-  ctx.fillRect(-4, 4, 96, 9);
-  ctx.fillStyle = color;
+  ctx.fillStyle = "rgba(48,28,10,0.26)";
   ctx.beginPath();
-  ctx.roundRect(0, -5, 92, 10, 5);
+  ctx.roundRect(-30, -54, 66, 118, 12);
   ctx.fill();
-  ctx.fillStyle = "#e8e4dc";
+  ctx.fillStyle = "#22252a";
   ctx.beginPath();
-  ctx.roundRect(84, -4, 14, 8, 4);
+  ctx.roundRect(-34, -58, 66, 118, 12);
   ctx.fill();
-  ctx.fillStyle = "#2b2b2b";
+  const scr = ctx.createLinearGradient(-30, -50, 30, 50);
+  scr.addColorStop(0, "#40608c");
+  scr.addColorStop(1, "#1d2c42");
+  ctx.fillStyle = scr;
   ctx.beginPath();
-  ctx.moveTo(98, -2.5);
-  ctx.lineTo(108, 0);
-  ctx.lineTo(98, 2.5);
+  ctx.roundRect(-29, -53, 56, 108, 7);
+  ctx.fill();
+  ctx.fillStyle = "#101319";
+  ctx.beginPath();
+  ctx.roundRect(-12, -49, 22, 6, 3);
+  ctx.fill();
+  // cracked-corner glare
+  ctx.fillStyle = "rgba(255,255,255,0.16)";
+  ctx.beginPath();
+  ctx.moveTo(-29, -53);
+  ctx.lineTo(-4, -53);
+  ctx.lineTo(-29, -22);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -224,109 +429,153 @@ function drawNotebook(ctx: CanvasRenderingContext2D, x: number, y: number, rot: 
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(rot);
-  ctx.fillStyle = "rgba(40,20,5,0.18)";
-  ctx.fillRect(-90, -64, 190, 136);
-  ctx.fillStyle = "#3f5d8a";
+  ctx.fillStyle = "rgba(48,28,10,0.22)";
   ctx.beginPath();
-  ctx.roundRect(-95, -70, 180, 130, 8);
+  ctx.roundRect(-84, -58, 178, 124, 7);
   ctx.fill();
-  ctx.fillStyle = "#dcd6ca";
+  ctx.fillStyle = "#33506f";
   ctx.beginPath();
-  ctx.roundRect(-88, -62, 166, 116, 5);
+  ctx.roundRect(-88, -62, 178, 124, 7);
   ctx.fill();
-  ctx.strokeStyle = "rgba(90,80,60,0.5)";
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i < 6; i++) {
+  ctx.fillStyle = "#d9d2c5";
+  ctx.beginPath();
+  ctx.roundRect(-82, -56, 166, 112, 5);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(120,105,85,0.45)";
+  ctx.lineWidth = 1.4;
+  for (let i = 0; i < 5; i++) {
     ctx.beginPath();
-    ctx.moveTo(-74, -40 + i * 18);
-    ctx.lineTo(62, -40 + i * 18);
+    ctx.moveTo(-68, -34 + i * 19);
+    ctx.lineTo(70, -34 + i * 19);
     ctx.stroke();
   }
-  ctx.strokeStyle = "#8a5a3b";
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#7c4a2c";
+  ctx.lineWidth = 3.4;
   ctx.beginPath();
-  ctx.moveTo(-88, -62);
-  ctx.bezierCurveTo(-30, -20, 30, 40, 78, 54);
+  ctx.moveTo(-82, -56);
+  ctx.bezierCurveTo(-30, -18, 24, 34, 72, 46);
   ctx.stroke();
   ctx.restore();
 }
 
-function drawPlant(ctx: CanvasRenderingContext2D, x: number, y: number) {
+function drawPen(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number, color: string) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.fillStyle = "rgba(40,20,5,0.2)";
+  ctx.rotate(rot);
+  ctx.fillStyle = "rgba(48,28,10,0.24)";
   ctx.beginPath();
-  ctx.ellipse(6, 66, 52, 13, 0, 0, Math.PI * 2);
+  ctx.roundRect(-2, 3, 92, 8, 4);
   ctx.fill();
-  ctx.fillStyle = "#b3703f";
+  ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.moveTo(-38, 66);
-  ctx.lineTo(38, 66);
-  ctx.lineTo(28, 6);
-  ctx.lineTo(-28, 6);
-  ctx.closePath();
+  ctx.roundRect(0, -4, 86, 9, 4.5);
   ctx.fill();
-  ctx.fillStyle = "#8f5730";
-  ctx.fillRect(-40, 60, 80, 8);
-  const leaf = (a: number, len: number, curve: number) => {
-    ctx.save();
-    ctx.rotate(a);
-    const g = ctx.createLinearGradient(0, 0, 0, -len);
-    g.addColorStop(0, "#2f7a52");
-    g.addColorStop(1, "#49a46f");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.quadraticCurveTo(curve, -len * 0.55, 0, -len);
-    ctx.quadraticCurveTo(-curve, -len * 0.55, 0, 0);
-    ctx.fill();
-    ctx.restore();
-  };
-  for (let i = 0; i < 7; i++) leaf(-0.9 + i * 0.3, 70 + (i % 3) * 18, 22);
-  ctx.restore();
-}
-
-function drawPhone(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(0.3);
-  ctx.fillStyle = "rgba(40,20,5,0.22)";
+  ctx.fillStyle = "#eceae4";
   ctx.beginPath();
-  ctx.roundRect(-36, -62, 78, 132, 14);
+  ctx.roundRect(80, -3.4, 13, 7.4, 3.5);
   ctx.fill();
   ctx.fillStyle = "#26282c";
   ctx.beginPath();
-  ctx.roundRect(-40, -66, 78, 132, 14);
-  ctx.fill();
-  const scr = ctx.createLinearGradient(0, -60, 40, 60);
-  scr.addColorStop(0, "#3d5a80");
-  scr.addColorStop(1, "#20344f");
-  ctx.fillStyle = scr;
-  ctx.beginPath();
-  ctx.roundRect(-34, -60, 66, 120, 8);
-  ctx.fill();
-  ctx.fillStyle = "#12141a";
-  ctx.beginPath();
-  ctx.roundRect(-14, -56, 26, 7, 3.5);
+  ctx.moveTo(92, -2);
+  ctx.lineTo(102, 0);
+  ctx.lineTo(92, 2);
+  ctx.closePath();
   ctx.fill();
   ctx.restore();
 }
 
-function drawCoaster(ctx: CanvasRenderingContext2D, x: number, y: number) {
+function drawSunglasses(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number) {
   ctx.save();
   ctx.translate(x, y);
-  ctx.fillStyle = "rgba(40,20,5,0.2)";
+  ctx.rotate(rot);
+  ctx.fillStyle = "rgba(48,28,10,0.2)";
   ctx.beginPath();
-  ctx.ellipse(4, 8, 48, 14, 0, 0, Math.PI * 2);
+  ctx.ellipse(4, 16, 78, 16, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "#7c93a8";
+  const lens = ctx.createLinearGradient(0, -18, 0, 14);
+  lens.addColorStop(0, "#3a4658");
+  lens.addColorStop(1, "#1b2330");
+  ctx.fillStyle = lens;
   ctx.beginPath();
-  ctx.ellipse(0, 0, 46, 15, 0, 0, Math.PI * 2);
+  ctx.roundRect(-74, -16, 62, 32, [16, 16, 12, 12]);
   ctx.fill();
-  ctx.fillStyle = "#93aabc";
   ctx.beginPath();
-  ctx.ellipse(0, -4, 46, 15, 0, 0, Math.PI * 2);
+  ctx.roundRect(12, -16, 62, 32, [12, 12, 16, 16]);
   ctx.fill();
+  ctx.strokeStyle = "#2b333f";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-12, -2);
+  ctx.lineTo(12, -2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-74, -8);
+  ctx.lineTo(-104, -18);
+  ctx.moveTo(74, -8);
+  ctx.lineTo(104, -18);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.18)";
+  ctx.beginPath();
+  ctx.roundRect(-66, -12, 44, 10, 5);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Tangled charging cable — the kind of thing that's always in the shot. */
+function drawCable(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(52,54,58,0.85)";
+  ctx.lineWidth = 6;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.bezierCurveTo(x + 90, y - 60, x + 20, y + 80, x + 130, y + 40);
+  ctx.bezierCurveTo(x + 210, y + 8, x + 150, y + 130, x + 236, y + 96);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCrumbSpecks(
+  ctx: CanvasRenderingContext2D,
+  rng: () => number,
+  n: number,
+) {
+  ctx.save();
+  for (let i = 0; i < n; i++) {
+    const x = rng() * W;
+    const y = rng() * H;
+    const s = 1 + rng() * 2.4;
+    ctx.fillStyle = `rgba(${60 + rng() * 60},${45 + rng() * 40},${28 + rng() * 26},${0.2 + rng() * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(x, y, s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawLeaf(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  const g = ctx.createLinearGradient(0, 0, -50, 26);
+  g.addColorStop(0, "#3f8f5f");
+  g.addColorStop(1, "#276b43");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(-34, 22, -56, 4);
+  ctx.quadraticCurveTo(-32, -18, 0, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "rgba(20,60,36,0.55)";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(2, 0);
+  ctx.lineTo(-52, 4);
+  ctx.stroke();
   ctx.restore();
 }
 

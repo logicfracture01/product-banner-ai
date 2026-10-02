@@ -12,6 +12,13 @@
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
+# The matting model is fetched from the HuggingFace CDN at runtime and cached
+# by the browser; nothing model-sized should ever be baked into the deploy.
+[[headers]]
+  for = "/_headers"
+  [headers.values]
+    Cache-Control = "no-cache"
+
 [[headers]]
   for = "/*"
   [headers.values]
