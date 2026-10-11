@@ -371,6 +371,11 @@ function segmentPass(
   const edge = sobel(rgba, width, height);
   const EDGE_STRONG = 60;
 
+  // Band all edge values above this to a hard pass/fail so the flood fill is
+  // guided by real discontinuities, not tiny texture noise. This is the threshold
+  // used both when seeding from the border and when walking inward.
+  const EDGE_PASS = 35;
+
   const ring = Math.max(2, Math.round(Math.min(width, height) * 0.06));
   const maxSamples = Math.ceil(width / 2) * Math.ceil(ring / 2) * 2 * 2 + Math.ceil((height - 2 * ring) / 2) * Math.ceil(ring / 2) * 2 * 2;
   const samples = new Uint32Array(maxSamples);
@@ -464,14 +469,21 @@ function segmentPass(
       const ny = y + (d === 2 ? -1 : d === 3 ? 1 : 0);
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       const j = ny * width + nx;
-      if (flood[j]) continue;
-      if (edge[j] > EDGE_STRONG) continue;
+      if (flood[j] === 1) continue;
+      if (flood[j] === 2) continue;
+      if (edge[j] > EDGE_PASS) continue;
       const q = j * 4;
       const dist = bgDistance(rgba[q], rgba[q + 1], rgba[q + 2], bgCenters, scale);
 
-      const edgeDamp = 1 - Math.min(1, edge[j] / EDGE_STRONG) * 0.65;
+      const edgeDamp = 1 - Math.min(1, edge[j] / EDGE_PASS) * 0.65;
       if (dist <= cutoff * edgeDamp) {
         stack[sp++] = j;
+      } else {
+        // Stop any further spread along this edge of the product. Non-bg-colored
+        // pixels can still be walkable later through other, bg-colored neighbors,
+        // but we must not let one strong edge let the flood slide around the whole
+        // object or leak into the product color class through weak edge pixels.
+        flood[j] = 2;
       }
     }
     if (sp >= n) break;
@@ -506,9 +518,25 @@ function segmentPass(
 
   // Opening (erode 1 + dilate 1): strips the remaining 1px blend halo and
   // kills sub-3px speckles in one move.
-  const opened = boxErode(boxDilate(shaved, width, height, 1), width, height, 1);
-  const { labels, sizes } = components(opened, width, height);
-  const minSize = Math.max(24, n * 0.004);
+  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
+  const { labels: openedLabels, sizes: openedSizes } = components(opened, width, height);
+  const openedCount = openedSizes.length;
+  const openedSizesUint32 = new Uint32Array(openedSizes);
+  const openedMinSize = Math.max(24, n * 0.004);
+  const openedKeep = new Uint8Array(openedCount);
+  for (let c = 0; c < openedCount; c++) {
+    openedKeep[c] = openedSizesUint32[c] >= openedMinSize ? 1 : 0;
+  }
+  // If opening killed everything, fall back to the shaved mask so a scene that
+  // is mostly product (or where the object is genuinely small but real) still
+  // returns a usable cutout instead of an empty result.
+  const fallbackToShaved = openedKeep.every((v) => v === 0) && openedCount > 0;
+  const labels = fallbackToShaved
+    ? components(shaved, width, height).labels
+    : openedLabels;
+  const sizes = fallbackToShaved
+    ? components(shaved, width, height).sizes
+    : openedSizesUint32;
   const compCount = sizes.length;
 
   // Aggregate per-component geometry + statistics.
@@ -532,7 +560,15 @@ function segmentPass(
       if (y < compMinY[l]) compMinY[l] = y;
       if (x > compMaxX[l]) compMaxX[l] = x;
       if (y > compMaxY[l]) compMaxY[l] = y;
-      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) compBorder[l]++;
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+        if (fallbackToShaved) {
+          // The shaved mask already measured border contact during the shave
+          // pass, so reuse that signal and break out once we hit the first
+          // border pixel of this component.
+          break;
+        }
+        compBorder[l]++;
+      }
     }
   }
 
@@ -555,7 +591,7 @@ function segmentPass(
 
   const keep = new Uint8Array(compCount);
   for (let c = 0; c < compCount; c++) {
-    keep[c] = sizes[c] >= minSize ? 1 : 0;
+    keep[c] = sizes[c] >= openedMinSize ? 1 : 0;
   }
   if (keep.every((v) => v === 0) && compCount > 0) {
     let big = 0;
@@ -582,7 +618,7 @@ function segmentPass(
 
   // Closing (dilate 1 + erode 1): seals pinholes and gaps without growing
   // the contour (net-neutral on straight edges — critical for IoU accuracy).
-  const closedPair = boxDilate(boxErode(fg, width, height, 1), width, height, 1);
+  const closedPair = boxErode(boxDilate(fg, width, height, 1), width, height, 1);
   const filled = fillHoles(closedPair, width, height);
 
   // ---- Stage 4: signed-distance alpha matting + decontamination ------------
