@@ -59,7 +59,7 @@ export type SegmentOptions = {
   noRetry?: boolean;
 };
 
-import { clamp255 } from "./pixels";
+import { clamp255, boxDilate8 } from "./pixels";
 
 // ---------------------------------------------------------------- utilities
 
@@ -254,6 +254,62 @@ function signedDistance(fg: Uint8Array, w: number, h: number): Float32Array {
 }
 
 function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  if (r !== 1) {
+    const tmp = new Uint8Array(src.length);
+    const out = new Uint8Array(src.length);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let v = 1;
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w || !src[y * w + xx]) {
+            v = 0;
+            break;
+          }
+        }
+        tmp[y * w + x] = v;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let v = 1;
+        for (let dy = -r; dy <= r; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h || !tmp[yy * w + x]) {
+            v = 0;
+            break;
+          }
+        }
+        out[y * w + x] = v;
+      }
+    }
+    return out;
+  }
+  const tmp = new Uint8Array(src.length);
+  const out = new Uint8Array(src.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 1;
+      const xx = x;
+      if (xx < 0 || xx >= w || !src[y * w + x - 1] || !src[y * w + x] || !src[y * w + x + 1]) {
+        v = 0;
+      }
+      tmp[y * w + x] = v;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 1;
+      const yy = y;
+      if (yy < 0 || yy >= h || !tmp[(y - 1) * w + x] || !tmp[y * w + x] || !tmp[(y + 1) * w + x]) {
+        v = 0;
+      }
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+
   const tmp = new Uint8Array(src.length);
   const out = new Uint8Array(src.length);
   for (let y = 0; y < h; y++) {
@@ -285,37 +341,6 @@ function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array 
   return out;
 }
 
-function boxDilate(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
-  const tmp = new Uint8Array(src.length);
-  const out = new Uint8Array(src.length);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let v = 0;
-      for (let dx = -r; dx <= r; dx++) {
-        const xx = x + dx;
-        if (xx >= 0 && xx < w && src[y * w + xx]) {
-          v = 1;
-          break;
-        }
-      }
-      tmp[y * w + x] = v;
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let v = 0;
-      for (let dy = -r; dy <= r; dy++) {
-        const yy = y + dy;
-        if (yy >= 0 && yy < h && tmp[yy * w + x]) {
-          v = 1;
-          break;
-        }
-      }
-      out[y * w + x] = v;
-    }
-  }
-  return out;
-}
 
 /** Background pixels not reachable from the border become foreground. */
 function fillHoles(fg: Uint8Array, w: number, h: number): Uint8Array {
@@ -563,7 +588,7 @@ function segmentPass(
 
   // Opening (erode 1 + dilate 1): strips the remaining 1px blend halo and
   // kills sub-3px speckles in one move.
-  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);  // keep only meaningful components: the product is large and compact
+  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
   const { labels, sizes } = components(opened, width, height);
   const minSize = Math.max(24, n * 0.004);
   const compCount = sizes.length;
