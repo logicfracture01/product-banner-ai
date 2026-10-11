@@ -216,7 +216,6 @@ function kmeansPalette(
  */
 export function analyzeCutout(cutout: Cutout): StyleAnalysis {
   const { alpha, width: w, height: h } = cutout;
-  const n = w * h;
 
   // sample every 4th pixel inside the cutout bbox with alpha > 128
   const samples: Array<[number, number, number]> = [];
@@ -226,8 +225,6 @@ export function analyzeCutout(cutout: Cutout): StyleAnalysis {
   let count = 0;
   let skinCount = 0;
   let glossyHits = 0;
-  let edgeHits = 0;
-  let edgeTotal = 0;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -244,10 +241,9 @@ export function analyzeCutout(cutout: Cutout): StyleAnalysis {
       count++;
       if (isSkinish(r, g, b)) skinCount++;
       if (l > 0.93) glossyHits++;
+      // a sparse, evenly spread sample set for the palette
       if ((x & 3) === 0 && (y & 3) === 0) {
         samples.push([r, g, b]);
-        edgeHits += l > 0.92 ? 1 : 0;
-        edgeTotal++;
       }
     }
   }

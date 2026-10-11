@@ -18,10 +18,18 @@ import {
   type Placement,
   type RatioId,
 } from "@/lib/pipeline/banner";
-import { getDemoBefore, DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
+import { DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
+import { loadSample as loadSamplePhoto, type SamplePhoto } from "@/lib/pipeline/samplePhotos";
 import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
 import { matteToCutout } from "@/lib/pipeline/aiMatting";
+import {
+  boxIoU,
+  detectObjects,
+  detectionToBox,
+  primaryDetection,
+  type DetectResult,
+} from "@/lib/pipeline/objectDetection";
 import { aiMatteAsync, preloadMatting, setMattingProgressListener } from "@/lib/pipeline/aiMattingClient";
 import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
@@ -115,6 +123,33 @@ export default function Studio() {
   /** Guards the background model preload so it can only ever start once. */
   const preloadRef = useRef(false);
   const [cutoutTick, setCutoutTick] = useState(0);
+  /** Stage-1 object detection result for the loaded photo (null = nothing found). */
+  const [detection, setDetection] = useState<{ label: string; confidence: number } | null>(null);
+  /**
+   * How many objects the segmenter found, mirrored into state.
+   *
+   * This used to be read straight off `cutoutRef.current` *during render* (in
+   * the screen-reader live region), which React forbids: a ref is not a
+   * reactive value, so the announcement could show a stale count and the read
+   * is unsafe under concurrent rendering. State keeps it correct and legal.
+   */
+  const [candidateCount, setCandidateCount] = useState(1);
+  /** Attribution for the sample photo currently loaded (null = uploaded file). */
+  const [samplePhoto, setSamplePhoto] = useState<SamplePhoto | null>(null);
+
+  /**
+   * Mutable pipeline settings, mirrored into a ref.
+   *
+   * `loadFile` / `loadSample` are memoised with an empty dependency list (they
+   * back a file input and window-level listeners), so without this they would
+   * capture the FIRST render's `upscaleFactor` and `tolerance` forever — moving
+   * the detail-boost or tolerance slider and then loading a photo silently used
+   * the stale values. The ref keeps those memoised closures correct.
+   */
+  const settingsRef = useRef({ upscaleFactor, tolerance });
+  useEffect(() => {
+    settingsRef.current = { upscaleFactor, tolerance };
+  }, [upscaleFactor, tolerance]);
 
   /** Begin the one-time background model download (also used by "retry"). */
   const ensureWarm = useCallback(() => {
@@ -196,6 +231,12 @@ export default function Studio() {
       console.error(err);
       setStage("error");
     }
+    // `ingestBitmap` is intentionally not a dependency: it is redefined every
+    // render, so depending on it would re-create this callback and re-bind the
+    // event listeners constantly. The values it actually needs to observe at
+    // call time (upscale factor, tolerance) are read through `settingsRef`,
+    // which is stable — see its declaration for the staleness bug this fixes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -230,10 +271,11 @@ export default function Studio() {
     // sharpening). Small phone crops come in soft; this restores crisp
     // product edges, text and seams BEFORE segmentation so the cutout,
     // shadows and the banner all inherit the extra detail.
-    if (upscaleFactor > 1) {
+    const { upscaleFactor: upscale } = settingsRef.current;
+    if (upscale > 1) {
       try {
         const up = upscaleImage(data.data, w, h, {
-          factor: upscaleFactor === 3 ? 3 : 2,
+          factor: upscale === 3 ? 3 : 2,
           sharpening: 0.55,
           crispness: 0.75,
         });
@@ -257,17 +299,35 @@ export default function Studio() {
 
     // give the UI a frame to show the processing state
     await new Promise((r) => setTimeout(r, 30));
-    // The AI model needs a bitmap of the FINAL (possibly upscaled) pixels.
-    // If we upscaled, bitmap dims differ from data dims — re-draw at final size.
+
+    // The AI model needs a bitmap of the FINAL (possibly upscaled) pixels, and
+    // detections must be reported in the same coordinate space as the cutout,
+    // so both stages read this one canvas.
     let modelBmp: ImageBitmap = bitmap;
+    let detectSource: HTMLCanvasElement = cv;
     if (bitmap.width !== w || bitmap.height !== h) {
       const bcv = document.createElement("canvas");
       bcv.width = w;
       bcv.height = h;
       bcv.getContext("2d")!.putImageData(data, 0, 0);
       modelBmp = await createImageBitmap(bcv);
+      detectSource = bcv;
     }
-    await runSegment(data.data, w, h, tolerance, modelBmp);
+
+    // STAGE 1 — object detection. Started here and awaited inside runSegment so
+    // it overlaps the matting work rather than serialising in front of it, and
+    // resolved to [] on any failure so it can never delay or break the cutout.
+    const detectionPromise = detectObjects(detectSource).catch((): DetectResult[] => []);
+
+    await runSegment(
+      data.data,
+      w,
+      h,
+      settingsRef.current.tolerance,
+      modelBmp,
+      false,
+      detectionPromise,
+    );
   };
 
   // ---- segmentation: AI matting first (BiRefNet, MIT), custom engine as
@@ -280,6 +340,7 @@ export default function Studio() {
     tol: number,
     bitmap?: ImageBitmap,
     customOnly?: boolean,
+    detectionPromise?: Promise<DetectResult[]>,
   ) => {
     if (customOnly) {
       setAiState("failed");
@@ -288,6 +349,7 @@ export default function Studio() {
     }
     try {
       let cutout: Cutout | null = null;
+      let fromAi = false;
 
       // 1) AI matte (needs the bitmap at the same size as rgba)
       if (bitmap && !customOnly) {
@@ -302,6 +364,7 @@ export default function Studio() {
             );
             setAiState("ready");
             setAiProgress(100);
+            fromAi = true;
           } else {
             setAiState("failed");
             setAiProgress(null);
@@ -319,6 +382,38 @@ export default function Studio() {
         cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
       }
 
+      // STAGE 1 CROSS-CHECK. The AI matte and the detector are independent
+      // opinions about the same question, so disagreement between them is real
+      // evidence that one of them latched onto the wrong thing (a tablecloth, a
+      // wall). When the matte's framing has almost nothing to do with the
+      // detected object, ask the custom engine for a second opinion and keep
+      // whichever box agrees with the detector. Only runs on disagreement, so
+      // the common path pays nothing extra.
+      let primary: DetectResult | null = null;
+      try {
+        const detections = detectionPromise ? await detectionPromise : [];
+        primary = primaryDetection(detections);
+        setDetection(
+          primary && primary.label
+            ? { label: primary.label, confidence: primary.confidence }
+            : null,
+        );
+      } catch {
+        setDetection(null);
+      }
+      const target = detectionToBox(primary);
+      if (fromAi && cutout && target) {
+        const agreed = boxIoU(cutout.box, target);
+        if (agreed < 0.15) {
+          try {
+            const alt = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
+            if (boxIoU(alt.box, target) > agreed) cutout = alt;
+          } catch {
+            /* keep the AI cutout */
+          }
+        }
+      }
+
       // 3) safety net: a whole-frame or near-empty cutout can't produce a
       // usable banner. For the built-in sample the laptop's position is known
       // exactly (the scene is deterministic), so fall back to that box rather
@@ -334,6 +429,7 @@ export default function Studio() {
 
       const { box } = cutout;
       cutoutRef.current = cutout;
+      setCandidateCount(Math.max(1, cutout.candidates.length));
       setConfidence(cutout.confidence);
       setEdgeWarning(cutout.touchedEdges.size > 0);
       const coversAll = box.w > w * 0.97 && box.h > h * 0.97;
@@ -366,33 +462,40 @@ export default function Studio() {
   // ---- load the procedural sample ---------------------------------------
 
   /**
-   * Loads the built-in demo photo (a procedurally generated "laptop on a
-   * sunlit deck" shot) and runs the EXACT same pipeline as a real upload —
-   * it goes through {@link ingestBitmap}, so downscale, detail boost and
+   * Loads a sample photo and runs the EXACT same pipeline as a real upload — it
+   * goes through {@link ingestBitmap}, so downscale, detail boost, detection and
    * matting behave identically to a user's own file.
+   *
+   * Real photographs are preferred (a drawn scene proves the maths but not the
+   * product claim); the procedural scene is the offline fallback. Only the
+   * procedural path gets `isDemoRef`, because only its subject position is known
+   * exactly — see DEMO_FALLBACK_BOX.
    */
-  const loadSample = useCallback(async () => {
+  const loadSample = useCallback(async (preferredId?: string) => {
     setStage("processing");
-    setFileName("sample-laptop-on-deck.jpg");
     try {
-      setBeforeUrl(getDemoBefore());
-      const img = new Image();
-      await new Promise<void>((res, rej) => {
-        img.onload = () => res();
-        img.onerror = () => rej(new Error("sample failed"));
-        img.src = getDemoBefore();
-      });
-      // Remember the native sample size so the fallback box (which is in scene
-      // pixels) can only be applied when the pixels weren't rescaled.
-      sampleWRef.current = img.naturalWidth;
-      sampleHRef.current = img.naturalHeight;
-      isDemoRef.current = true;
-      const bitmap = await createImageBitmap(img);
-      await ingestBitmap(bitmap);
+      const sample = await loadSamplePhoto(preferredId);
+      setFileName(sample.name);
+      setSamplePhoto(sample.photo);
+      if (sample.procedural) {
+        // The fallback box is expressed in procedural-scene pixels and is only
+        // valid while those pixels have not been rescaled.
+        sampleWRef.current = sample.bitmap.width;
+        sampleHRef.current = sample.bitmap.height;
+        isDemoRef.current = true;
+      } else {
+        isDemoRef.current = false;
+        sampleWRef.current = 0;
+        sampleHRef.current = 0;
+      }
+      await ingestBitmap(sample.bitmap);
     } catch (err) {
       console.error(err);
       setStage("error");
     }
+    // Same reasoning as `loadFile` above: stable identity on purpose, with
+    // mutable pipeline settings read through `settingsRef`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- render loop -------------------------------------------------------
@@ -657,9 +760,16 @@ export default function Studio() {
           Loading AI cutout engine
           {" "}
           {aiProgress !== null
-            ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…" : ""}`
+            ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…)" : ""}`
             : "— first run downloads ~60 MB, then cached"}
           <span className="text-muted-foreground">· runs in background, app stays usable</span>
+        </div>
+      )}
+      {/* Stage-1 object detection result (what the detector thinks the subject is) */}
+      {detection && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
+          <Sparkles className="size-3.5 text-primary" />
+          Main object: {detection.label} · {Math.round(detection.confidence * 100)}%
         </div>
       )}
       {aiState === "failed" && (
@@ -682,7 +792,7 @@ export default function Studio() {
       <p aria-live="polite" className="sr-only">
         {stage === "processing" && "Processing photo: finding your product."}
         {stage === "ready" &&
-          `Photo ready. ${cutoutRef.current?.candidates.length ?? 1} object${(cutoutRef.current?.candidates.length ?? 1) === 1 ? "" : "s"} detected. Cutout confidence ${Math.round((confidence ?? 0) * 100)} percent.`}
+          `Photo ready. ${candidateCount} object${candidateCount === 1 ? "" : "s"} detected. Cutout confidence ${Math.round((confidence ?? 0) * 100)} percent.`}
         {stage === "error" &&
           (fitWarning
             ? "Could not find a clear product. The whole photo was kept."
@@ -778,12 +888,30 @@ export default function Studio() {
                 variant="outline"
                 size="sm"
                 className="mt-3 w-full"
-                onClick={loadSample}
+                onClick={() => void loadSample()}
                 disabled={stage === "processing"}
               >
                 <Sparkles className="size-4 text-primary" />
                 Try the sample photo
               </Button>
+              <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+                {samplePhoto ? (
+                  <>
+                    Sample photo by{" "}
+                    <a
+                      href={samplePhoto.source}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                    >
+                      {samplePhoto.photographer}
+                    </a>{" "}
+                    (Pexels) — {samplePhoto.subject} on a real background.
+                  </>
+                ) : (
+                  "Uses a real product photo; falls back to the built-in scene when offline."
+                )}
+              </p>
               <div className="mt-3">
                 <Label className="text-xs text-muted-foreground">Detail boost (upscale)</Label>
                 <div
@@ -1111,7 +1239,9 @@ export default function Studio() {
             </Card>
 
             {/* cutout tuning */}
-            <Card className={cn("p-5", !sourceRef.current && "opacity-50 pointer-events-none")}>
+            {/* `beforeUrl` mirrors whether a source photo exists, so this card
+                can be dimmed without reading a ref during render. */}
+            <Card className={cn("p-5", !beforeUrl && "opacity-50 pointer-events-none")}>
               <h2 className="mb-3 font-display text-sm font-semibold tracking-wide uppercase">
                 Cutout sensitivity
               </h2>
@@ -1184,8 +1314,8 @@ export default function Studio() {
                   <div className="col-span-2 mt-1 flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Objects detected</dt>
                     <dd className="font-medium">
-                      {cutoutRef.current?.candidates.length ?? "—"}
-                      {(cutoutRef.current?.candidates.length ?? 0) > 1 && (
+                      {candidateCount}
+                      {candidateCount > 1 && (
                         <span className="ml-1 text-xs text-muted-foreground">
                           · centered one framed
                         </span>
@@ -1216,7 +1346,7 @@ export default function Studio() {
           {/* -------------------------------------------------- preview */}
           <div className="flex flex-col gap-4">
             {stage === "empty" && (
-              <EmptyState onBrowse={() => inputRef.current?.click()} onSample={loadSample} />
+              <EmptyState onBrowse={() => inputRef.current?.click()} onSample={() => void loadSample()} />
             )}
             {stage === "processing" && <ProcessingState />}
             {stage === "error" && (
@@ -1401,7 +1531,7 @@ export default function Studio() {
                 </Card>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   {[
-                    { k: "Detected", v: (() => { const c = cutoutRef.current?.candidates.length ?? 1; return c + (c === 1 ? " object" : " objects"); })() },
+                    { k: "Detected", v: candidateCount + (candidateCount === 1 ? " object" : " objects") },
                     { k: "Shadow", v: "Coverage integral" },
                     { k: "Output", v: getRatio(ratio).w + " × " + getRatio(ratio).h },
                     { k: "Privacy", v: "On-device" },

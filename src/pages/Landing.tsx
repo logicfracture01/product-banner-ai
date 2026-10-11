@@ -3,7 +3,13 @@ import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DEMO_PLACE, getDemoBefore, renderDemoAfter } from "@/lib/pipeline/demo";
+import {
+  DEMO_PLACE,
+  getDemoBefore,
+  renderDemoAfter,
+  renderSampleBanner,
+} from "@/lib/pipeline/demo";
+import { loadSample } from "@/lib/pipeline/samplePhotos";
 import { DEFAULT_SHADOW } from "@/lib/pipeline/shadow";
 import { cn } from "@/lib/utils";
 import { motion, useScroll, useSpring } from "framer-motion";
@@ -64,12 +70,43 @@ export default function Landing() {
     let revoke: (() => void) | null = null;
     (async () => {
       try {
-        // Keep the first paint completely free: the demo builds an 860×645
-        // scene, segments it and composites a 1080×1350 banner. None of that
-        // should compete with the hero painting.
+        // Keep the first paint completely free: the demo builds a scene,
+        // segments it and composites a 1080×1350 banner. None of that should
+        // compete with the hero painting.
         await afterPaint();
-        const b = getDemoBefore();
+
+        // Prefer a REAL photograph of a real product — the hero is the app's
+        // central claim, and a drawn scene can't demonstrate it. `loadSample`
+        // resolves to the procedural scene when the CDN is unreachable, and
+        // `renderSampleBanner` returns null when the segmenter leaked across the
+        // whole frame, so both failure modes land on the deterministic path
+        // below instead of on a broken hero.
+        try {
+          const sample = await loadSample();
+          if (!alive) return;
+          if (!sample.procedural) {
+            const composed = await renderSampleBanner(sample.bitmap, {
+              backdrop: "studio",
+              shadow: DEFAULT_SHADOW,
+            });
+            if (!alive) {
+              composed?.render.revoke();
+              return;
+            }
+            if (composed) {
+              revoke = composed.render.revoke;
+              setBefore(composed.beforeUrl);
+              setAfter(composed.render.url);
+              setDemoState("ready");
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn("real-photo hero failed; using the procedural scene", err);
+        }
         if (!alive) return;
+
+        const b = getDemoBefore();
         setBefore(b);
         await afterPaint();
         const render = await renderDemoAfter(DEMO_PLACE, {

@@ -2,14 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import {
-  Crop,
-  ImageUp,
-  Layers,
-  LogOut,
-  Sparkles,
-  SunMedium,
-} from "lucide-react";
+import { Crop, ImageUp, Layers, Sparkles, SunMedium } from "lucide-react";
 import { Link } from "react-router";
 
 export default function Dashboard() {

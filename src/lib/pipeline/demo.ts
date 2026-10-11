@@ -161,6 +161,63 @@ export async function renderDemoAfter(
 }
 
 /**
+ * Run the real pipeline over an arbitrary sample photo and compose a banner,
+ * framing whatever subject the segmenter found with `autoPlacement` (instead of
+ * the fixed {@link DEMO_PLACE}, which is only correct for the procedural
+ * laptop).
+ *
+ * Returns null when the cutout is unusable — the whole frame was kept, i.e. the
+ * background leaked — so the caller can fall back to the deterministic scene
+ * rather than showing a broken hero.
+ *
+ * The AI matting model is deliberately NOT used here: it is ~60 MB, and the
+ * landing page must not charge every visitor for a model download before they
+ * have shown any interest.
+ */
+export async function renderSampleBanner(
+  bitmap: ImageBitmap,
+  opts: { backdrop: string; shadow: import("./shadow").ShadowOptions },
+  maxSide = 720,
+): Promise<{ beforeUrl: string; render: DemoRender } | null> {
+  const s = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * s));
+  const h = Math.max(1, Math.round(bitmap.height * s));
+  const cv = document.createElement("canvas");
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h);
+
+  const { segment } = await import("./segment");
+  const cutout = segment(data.data, w, h, { tolerance: 30 });
+
+  // Only a leak invalidates the demo. A merely imperfect box still composites
+  // into a convincing hero; a frame-covering "cutout" does not.
+  if (cutout.box.w <= 0 || cutout.box.h <= 0) return null;
+  if (cutout.box.w >= w * 0.9 && cutout.box.h >= h * 0.9) return null;
+
+  const out = document.createElement("canvas");
+  out.width = 1080;
+  out.height = 1350;
+  const octx = out.getContext("2d")!;
+  const { autoPlacement, drawBanner } = await import("./banner");
+  const place = autoPlacement(cutout, out.width, out.height);
+  drawBanner(octx, cutout, place, {
+    backdrop: opts.backdrop as never,
+    ratio: "4:5",
+    shadow: opts.shadow,
+  });
+
+  return {
+    beforeUrl: cv.toDataURL("image/jpeg", 0.86),
+    render: await encodePreview(out, out.width, out.height, 0.92),
+  };
+}
+
+/**
  * Encode a full-resolution canvas for on-screen display.
  *
  * `toDataURL("image/png")` on a 1080×1350 canvas costs ~150ms of blocking

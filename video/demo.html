@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Relight — demo capture</title>
+<style>
+  /* ---------------------------------------------------------------------
+     DEMO VIDEO SOURCE (see video/README.md and tools/make-demo-video.mjs)
+
+     This page is *seekable*, not real-time. Every visual is a pure function of
+     one number, `t` (seconds), passed in through window.__seek(t). There are no
+     CSS transitions and no animations on a wall clock, so the capture tool can
+     ask for frame N at any time and get exactly the same pixels every run —
+     which is what makes the output reproducible instead of "usually fine".
+
+     Style: the app's own palette. Amber = detection, teal = matting,
+     violet = planning, blue = render, pink = upscale.
+     --------------------------------------------------------------------- */
+  :root {
+    --bg: #0b1114;
+    --bg2: #121a1f;
+    --ink: #f4f6f5;
+    --muted: #8fa0a5;
+    --amber: #f4b23e;
+    --teal: #3fe0c8;
+    --violet: #a78bfa;
+    --blue: #60a5fa;
+    --pink: #f472b6;
+    --red: #ef6461;
+    --line: #24333a;
+    /* DejaVu first: it is what a bare Linux capture container has, so leading
+       with it keeps the encoded video's typography identical everywhere. */
+    --font: "DejaVu Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "DejaVu Sans Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #05080a; }
+  body { font-family: var(--font); color: var(--ink); overflow: hidden; }
+
+  #stage {
+    position: relative; width: 1280px; height: 720px;
+    background: var(--bg); overflow: hidden;
+  }
+  /* Camera wrapper: the capture tool never touches it; scenes do, through
+     --cam-scale / --cam-x / --cam-y set by __seek(). */
+  #camera {
+    position: absolute; inset: 0;
+    transform: translate(var(--cam-x, 0px), var(--cam-y, 0px)) scale(var(--cam-scale, 1));
+    transform-origin: 50% 50%;
+  }
+
+  .scene {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    opacity: 0; visibility: hidden;
+  }
+  .scene.active { opacity: 1; visibility: visible; }
+
+  .pad { padding: 0 84px; width: 100%; }
+  .kicker {
+    font: 700 13px/1 var(--font); letter-spacing: .22em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 18px;
+  }
+  h1 { font-size: 78px; line-height: 1.02; margin: 0; letter-spacing: -2.2px; }
+  h2 { font-size: 46px; line-height: 1.06; margin: 0; letter-spacing: -1.2px; }
+  .sub { font-size: 21px; line-height: 1.5; color: var(--muted); margin-top: 18px; max-width: 940px; }
+  .accent { color: var(--amber); }
+
+  /* ---------------------------------------------------------------- chrome */
+  #hud {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+    background: #16222a; z-index: 40;
+  }
+  #hudFill { height: 100%; width: 0; background: linear-gradient(90deg, var(--amber), var(--teal), var(--blue)); }
+  #chapter {
+    position: absolute; left: 40px; bottom: 24px; z-index: 41;
+    font: 600 12px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  #chapter b { color: var(--ink); }
+  #badge {
+    position: absolute; right: 40px; bottom: 20px; z-index: 41;
+    font: 700 12px/1 var(--font); letter-spacing: .16em; text-transform: uppercase;
+    color: var(--muted); display: flex; align-items: center; gap: 9px;
+  }
+  #badge i { width: 8px; height: 8px; border-radius: 99px; background: var(--teal); box-shadow: 0 0 12px var(--teal); }
+  #vig {
+    position: absolute; inset: 0; z-index: 30; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 45%, transparent 40%, rgba(0,0,0,.55) 100%);
+  }
+
+  /* ----------------------------------------------------------------- intro */
+  .logo { display: flex; align-items: center; gap: 20px; }
+  .logoMark {
+    width: 76px; height: 76px; border-radius: 20px; position: relative;
+    background: linear-gradient(140deg, #1b262b, #0b1114);
+    border: 1px solid #2b3a41;
+    display: grid; place-items: center;
+  }
+  .beam { width: 34px; height: 34px; }
+  .wordmark { font-size: 66px; font-weight: 800; letter-spacing: -2.4px; }
+  .tag { color: var(--muted); font-size: 22px; margin-top: 22px; }
+
+  /* --------------------------------------------------------------- problem */
+  .messyWrap { display: flex; gap: 34px; align-items: flex-end; }
+  .photoThrow {
+    position: relative; width: 470px; height: 300px; border-radius: 16px; overflow: hidden;
+    box-shadow: 0 30px 60px rgba(0,0,0,.5);
+    border: 1px solid #2c3a41;
+    transform: rotate(var(--rot, 0deg));
+  }
+  .deck { position: absolute; inset: 0; background: linear-gradient(150deg,#c8a274,#8f6f48); }
+  .deckLine { position: absolute; left: 0; right: 0; height: 3px; background: rgba(70,48,24,.5); }
+  .laptop { position: absolute; left: 50%; top: 46%; width: 190px; height: 116px; transform: translate(-50%,-50%); border-radius: 8px; background: linear-gradient(150deg,#e8eaee,#8f959e); border: 1px solid #6f757e; }
+  .laptop:after { content: ""; position: absolute; inset: 12px; border-radius: 4px; background: linear-gradient(160deg,#33445c,#141a24); }
+  .clutter { position: absolute; border-radius: 6px; }
+  .tagPill {
+    position: absolute; padding: 5px 11px; border-radius: 99px; font: 700 12px/1 var(--font);
+    background: rgba(239,100,97,.16); color: #ffb3b1; border: 1px solid rgba(239,100,97,.45);
+  }
+  .statRow { display: flex; gap: 16px; margin-top: 34px; }
+  .stat {
+    padding: 14px 20px; border-radius: 14px; border: 1px solid var(--line);
+    background: linear-gradient(180deg,#121a1f,#0d1418);
+  }
+  .stat b { display: block; font-size: 27px; letter-spacing: -.6px; }
+  .stat span { font-size: 12.5px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+
+  /* -------------------------------------------------------------- pipeline */
+  .flow { display: flex; align-items: stretch; gap: 0; width: 1160px; }
+  .flowStep { flex: 1; position: relative; }
+  .flowCard {
+    height: 208px; border-radius: 18px; padding: 20px 18px;
+    border: 1px solid var(--line); background: linear-gradient(180deg,#121a1f,#0c1317);
+    display: flex; flex-direction: column; justify-content: space-between;
+    /* Staged reveal: each step fades in on its own slice of the scene, driven
+       only by --p so a seek to any time reproduces the exact same frame. */
+    opacity: clamp(0, calc((var(--p) * 5 - var(--i)) * 2), 1);
+    transform: translateY(calc((1 - clamp(0, calc((var(--p) * 5 - var(--i)) * 2), 1)) * 22px));
+  }
+  .flowCard .num { font: 700 11px/1 var(--mono); letter-spacing: .2em; color: var(--muted); }
+  .flowCard .glyph { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; font-size: 20px; }
+  .flowCard h3 { margin: 0; font-size: 19px; letter-spacing: -.4px; }
+  .flowCard p { margin: 7px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+  .flowArrow { width: 34px; display: grid; place-items: center; color: #3a4b53; font-size: 22px;
+    opacity: clamp(0, calc((var(--p) * 5 - var(--i)) * 2), 1); }
+  .gl-am { background: rgba(244,178,62,.14); color: var(--amber); }
+  .gl-te { background: rgba(63,224,200,.14); color: var(--teal); }
+  .gl-vi { background: rgba(167,139,250,.14); color: var(--violet); }
+  .gl-bl { background: rgba(96,165,250,.14); color: var(--blue); }
+  .gl-pk { background: rgba(244,114,182,.14); color: var(--pink); }
+  .bd-am { border-color: rgba(244,178,62,.55) !important; box-shadow: 0 0 0 1px rgba(244,178,62,.18), 0 18px 44px rgba(244,178,62,.12); }
+
+  /* ------------------------------------------------------- detection closeup */
+  .shot {
+    position: relative; width: 720px; height: 406px; border-radius: 18px; overflow: hidden;
+    border: 1px solid #2c3a41; box-shadow: 0 34px 70px rgba(0,0,0,.55);
+  }
+  .bbox {
+    position: absolute; border: 2.5px solid var(--amber); border-radius: 10px;
+    box-shadow: 0 0 0 9999px rgba(5,8,10,.42), 0 0 30px rgba(244,178,62,.35);
+    /* grows to full size over the first 45% of the scene, then holds */
+    left: calc(50% - 120px); top: calc(50% - 60px);
+    width: calc(clamp(0, calc(var(--p) / .45), 1) * 240px);
+    height: calc(clamp(0, calc(var(--p) / .45), 1) * 120px);
+    transform: translate(calc((1 - clamp(0, calc(var(--p) / .45), 1)) * 12px), calc((1 - clamp(0, calc(var(--p) / .45), 1)) * 6px));
+  }
+  .bboxTick { position: absolute; width: 14px; height: 14px; border: 3px solid var(--amber); }
+  .scanline {
+    position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    top: calc(clamp(0, calc(var(--p) / .45), 1) * 100%); opacity: clamp(0, 1 - var(--p) * 1.6, 1);
+  }
+  .chip {
+    position: absolute; padding: 7px 13px; border-radius: 10px; font: 700 13px/1 var(--mono);
+    background: rgba(244,178,62,.92); color: #241703; letter-spacing: .02em;
+    opacity: clamp(0, calc(var(--p) * 3 - 1.35), 1);
+  }
+  .sideList { width: 340px; display: flex; flex-direction: column; gap: 12px; }
+  .sideItem {
+    display: flex; gap: 12px; align-items: flex-start; padding: 13px 15px; border-radius: 12px;
+    border: 1px solid var(--line); background: rgba(18,26,31,.75);
+    opacity: clamp(0, calc(var(--p) * 3 - var(--i) * .8 - .5), 1);
+  }
+  .sideItem b { font-size: 13.5px; }
+  .sideItem span { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+  .dot { width: 9px; height: 9px; border-radius: 99px; margin-top: 5px; flex: none; }
+
+  /* ----------------------------------------------------------------- matte */
+  .checker {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(45deg, #1a2429 25%, transparent 25%, transparent 75%, #1a2429 75%),
+      linear-gradient(45deg, #1a2429 25%, transparent 25%, transparent 75%, #1a2429 75%);
+    background-size: 28px 28px; background-position: 0 0, 14px 14px;
+    background-color: #101a1f;
+  }
+  .bgPeel { position: absolute; inset: 0; background: linear-gradient(150deg,#c8a274,#8f6f48); opacity: calc(1 - clamp(0, calc(var(--p) * 1.35), 1)); }
+  .matteSweep {
+    position: absolute; top: 0; bottom: 0; width: 3px;
+    left: calc(clamp(0, calc(var(--p) * 1.35), 1) * 100%);
+    background: linear-gradient(180deg, transparent, var(--teal), transparent);
+    box-shadow: 0 0 24px var(--teal); opacity: clamp(0, 1 - var(--p) * .9, 1);
+  }
+
+  /* ---------------------------------------------------------------- planner */
+  .planBoard { display: flex; gap: 26px; width: 1120px; align-items: stretch; }
+  .planCard { flex: 1; border-radius: 16px; border: 1px solid var(--line); background: rgba(18,26,31,.8); padding: 18px; }
+  .planCard h4 { margin: 0 0 12px; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .shadowDemo { position: relative; height: 168px; }
+  .shadowBlob {
+    position: absolute; left: 50%; top: 58%; width: 210px; height: 42px; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(0,0,0,.62), rgba(0,0,0,0));
+    /* direction lerps 40deg -> 130deg, softness scales the blur, length the scale */
+    transform: translate(-50%,-50%) rotate(calc(40deg + var(--p) * 90deg)) scale(calc(.8 + var(--p) * .5), 1);
+    filter: blur(calc(2px + var(--p) * 9px));
+  }
+  .shadowCube { position: absolute; left: 50%; top: 34%; width: 96px; height: 78px; border-radius: 12px;
+    transform: translate(-50%,-50%); background: linear-gradient(150deg,#e8eaee,#9aa1aa); }
+  .swatchRow { display: flex; gap: 9px; }
+  .swatch { width: 34px; height: 34px; border-radius: 9px; border: 2px solid transparent; }
+  .swatch.on { border-color: var(--ink); }
+  .btnRow { display: flex; gap: 9px; flex-wrap: wrap; }
+  .uiBtn { padding: 8px 13px; border-radius: 9px; border: 1px solid var(--line); font-size: 12.5px; color: var(--muted); background: #0e161a; }
+  .uiBtn.on { border-color: var(--violet); color: var(--ink); background: rgba(167,139,250,.14); }
+  .barRow { margin-top: 14px; }
+  .bar { height: 6px; border-radius: 99px; background: #1b262c; overflow: hidden; margin-top: 7px; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--violet), var(--blue)); }
+
+  /* ----------------------------------------------------------------- render */
+  .bannerWrap { position: relative; }
+  .banner {
+    width: 324px; height: 405px; border-radius: 14px; overflow: hidden; position: relative;
+    border: 1px solid #31424a; box-shadow: 0 30px 60px rgba(0,0,0,.55);
+  }
+  .bannerBg { position: absolute; inset: 0; background: linear-gradient(180deg,#f7f6f3,#e3dfd6); }
+  .bannerPool { position: absolute; left: -20%; top: -30%; width: 140%; height: 90%;
+    background: radial-gradient(closest-side, rgba(255,255,255,.9), transparent); }
+  .bannerShadow { position: absolute; left: 50%; top: 74%; width: 210px; height: 40px; transform: translate(-50%,-50%);
+    background: radial-gradient(closest-side, rgba(0,0,0,.34), transparent); }
+  .bannerObj { position: absolute; left: 50%; top: 50%; width: 150px; height: 96px; transform: translate(-50%,-50%);
+    border-radius: 10px; background: linear-gradient(150deg,#e8eaee,#8f959e);
+    /* drops into place during the first 40% of the scene */
+    top: calc(50% + (1 - clamp(0, calc(var(--p) / .4), 1)) * -46px);
+    opacity: clamp(0, calc(var(--p) * 4), 1);
+  }
+  .zoomBox { position: absolute; width: 96px; height: 96px; border: 2px solid var(--blue); border-radius: 10px;
+    left: calc(18% + var(--p) * 54%); top: calc(30% + var(--p) * 34%); opacity: clamp(0, calc(var(--p) * 2.4 - .6), 1); }
+  .pixelGrid { display: grid; grid-template-columns: repeat(8, 26px); grid-template-rows: repeat(8, 26px); gap: 2px; }
+  .pixelGrid i { border-radius: 3px; background: #c8ced6; }
+  .pixelGrid.smooth i { background: #b9c0c9; }
+  .sharpRow { display: flex; gap: 26px; align-items: center; }
+  .edgeDemo { width: 208px; height: 96px; border-radius: 10px; border: 1px solid var(--line); background: #0e161a; overflow: hidden; display: flex; }
+  .edgeL, .edgeR { flex: 1; }
+  .edgeL { background: #232a30; }
+  .edgeR { background: #dfe4ea; }
+  .edgeSoft .edgeL, .edgeSoft .edgeR { flex: 1 1 0; }
+  .edgeSoft { position: relative; }
+  .edgeSoft:after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg,#232a30 30%, #8b939c 50%, #dfe4ea 70%); }
+  .edgeRamp { position: absolute; inset: 0; background: linear-gradient(90deg,#232a30 40%,#8b939c 50%,#dfe4ea 60%); }
+
+  /* -------------------------------------------------------------- app views */
+  .appFrame { width: 1120px; border-radius: 16px; border: 1px solid #2b3a41; background: #0e161a; overflow: hidden; box-shadow: 0 34px 70px rgba(0,0,0,.6); }
+  .appBar { height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid #1f2b32; background: #121a1f; }
+  .tl { width: 11px; height: 11px; border-radius: 99px; }
+  .urlPill { flex: 1; height: 24px; border-radius: 7px; background: #0b1114; border: 1px solid #1f2b32; display: flex; align-items: center; padding: 0 11px; font: 500 11.5px/1 var(--mono); color: var(--muted); }
+  .appBody { display: flex; height: 386px; }
+  .appPanel { width: 300px; border-right: 1px solid #1f2b32; padding: 14px; background: #101a1f; }
+  .appPanel h5 { margin: 0 0 10px; font: 700 10.5px/1 var(--font); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+  .drop { border: 1px dashed #2f4048; border-radius: 11px; padding: 18px 12px; text-align: center; font-size: 12px; color: var(--muted); }
+  .appPreview { flex: 1; display: grid; place-items: center; background: repeating-conic-gradient(#0c1418 0% 25%, #0f181d 0% 50%) 50% / 18px 18px; position: relative; }
+  .splitLine { position: absolute; top: 12px; bottom: 12px; width: 2px; background: var(--ink); left: calc(34% + var(--p) * 26%); box-shadow: 0 0 16px rgba(255,255,255,.5); }
+  .split {
+    position: relative; width: 470px; height: 320px; border-radius: 12px; overflow: hidden; border: 1px solid #2b3a41;
+  }
+  .splitBefore { position: absolute; inset: 0; background: linear-gradient(150deg,#c8a274,#8f6f48); }
+  .splitAfter { position: absolute; inset: 0; background: linear-gradient(180deg,#f7f6f3,#e6e2d9); clip-path: inset(0 0 0 calc(34% + var(--p) * 26%)); }
+  .splitAfter .bannerObj { top: 52%; }
+
+  /* --------------------------------------------------------------- badges */
+  .badgeGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; width: 1120px; }
+  .badgeCard { border-radius: 15px; border: 1px solid var(--line); background: rgba(18,26,31,.8); padding: 20px; }
+  .badgeCard b { display: block; font-size: 15.5px; margin-top: 12px; }
+  .badgeCard span { display: block; font-size: 12.5px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+
+  .center { text-align: center; display: flex; flex-direction: column; align-items: center; }
+  .row { display: flex; align-items: center; gap: 40px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="camera">
+
+    <!-- ================================================== 1 · intro ======= -->
+    <section class="scene" data-cam="1.14,0,0|1,0,0">
+      <div class="center">
+        <div class="logo">
+          <div class="logoMark">
+            <svg class="beam" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+              <path d="M17 15 L33 15 L46 47 L30 47 Z" fill="url(#g1)"/>
+              <rect x="21" y="38" width="27" height="11" rx="3.2" fill="url(#g2)"/>
+              <defs>
+                <linearGradient id="g1" x1="14" y1="12" x2="40" y2="46" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#FFD79A"/><stop offset="1" stop-color="#F0A02C" stop-opacity=".9"/>
+                </linearGradient>
+                <linearGradient id="g2" x1="22" y1="40" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#3FE0C8"/><stop offset="1" stop-color="#17A99A"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="wordmark">Relight</div>
+        </div>
+        <p class="tag">Studio-grade product photos from messy phone snapshots — entirely on device.</p>
+      </div>
+    </section>
+
+    <!-- ================================================ 2 · problem ======= -->
+    <section class="scene" data-cam="1.06,-14,0|1.0,0,0">
+      <div class="pad">
+        <div class="kicker">The problem</div>
+        <h2>Messy photos don't sell.<br/><span class="accent">Clean listings do.</span></h2>
+        <div class="messyWrap" style="margin-top:34px">
+          <div class="photoThrow" style="--rot:-3.2deg">
+            <div class="deck"></div>
+            <div class="deckLine" style="top:31%"></div>
+            <div class="deckLine" style="top:63%"></div>
+            <div class="laptop"></div>
+            <div class="clutter" style="left:22px;top:26px;width:58px;height:46px;background:#cfc9c1;border-radius:8px 8px 22px 22px"></div>
+            <div class="clutter" style="right:30px;top:22px;width:40px;height:62px;background:#22252a;border-radius:9px"></div>
+            <div class="clutter" style="right:96px;bottom:18px;width:86px;height:52px;background:#33506f;border-radius:7px;transform:rotate(6deg)"></div>
+            <div class="clutter" style="left:120px;bottom:26px;width:70px;height:8px;background:#e0563f;border-radius:6px;transform:rotate(-8deg)"></div>
+            <div class="tagPill" style="left:14px;bottom:12px">cluttered background</div>
+          </div>
+          <div class="photoThrow" style="--rot:2.6deg">
+            <div class="deck" style="background:linear-gradient(180deg,#1a2b33,#0f1a20)"></div>
+            <div class="laptop" style="top:50%"></div>
+            <div class="tagPill" style="right:14px;top:12px;background:rgba(63,224,200,.16);color:#9df3e5;border-color:rgba(63,224,200,.5)">catalog ready</div>
+          </div>
+        </div>
+        <div class="statRow">
+          <div class="stat"><b>5 stages</b><span>One pipeline</span></div>
+          <div class="stat"><b>0 uploads</b><span>Runs in the browser</span></div>
+          <div class="stat"><b>~7 MB</b><span>Detection model</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================== 3 · pipeline ======= -->
+    <section class="scene" data-cam="1.0,0,0|1.04,0,0">
+      <div class="pad">
+        <div style="text-align:center;margin-bottom:12px">
+          <div class="kicker">The workflow</div>
+          <h2>Detect <span class="accent">→</span> Cut out <span class="accent">→</span> Plan <span class="accent">→</span> Render <span class="accent">→</span> Upscale</h2>
+        </div>
+        <div class="flow" style="margin-top:26px">
+          <div class="flowStep" style="--i:0"><div class="flowCard"><div class="num">STAGE 01</div>
+            <div><div class="glyph gl-am">◎</div><h3>Object detection</h3>
+            <p>EfficientDet-Lite0 finds the main product and its bounds.</p></div></div></div>
+          <div class="flowArrow" style="--i:0">→</div>
+          <div class="flowStep" style="--i:1"><div class="flowCard"><div class="num">STAGE 02</div>
+            <div><div class="glyph gl-te">✂</div><h3>Background removal</h3>
+            <p>BiRefNet mattes the subject to a transparent cutout.</p></div></div></div>
+          <div class="flowArrow" style="--i:1">→</div>
+          <div class="flowStep" style="--i:2"><div class="flowCard"><div class="num">STAGE 03</div>
+            <div><div class="glyph gl-vi">✦</div><h3>Look planner</h3>
+            <p>Backdrop, shadow, scale and framing chosen from the pixels.</p></div></div></div>
+          <div class="flowArrow" style="--i:2">→</div>
+          <div class="flowStep" style="--i:3"><div class="flowCard"><div class="num">STAGE 04</div>
+            <div><div class="glyph gl-bl">▣</div><h3>Banner render</h3>
+            <p>Shadow, backdrop and product composited at full resolution.</p></div></div></div>
+          <div class="flowArrow" style="--i:3">→</div>
+          <div class="flowStep" style="--i:4"><div class="flowCard"><div class="num">STAGE 05</div>
+            <div><div class="glyph gl-pk">⤢</div><h3>Detail upscale</h3>
+            <p>Edge-directed 2×/3× so zoomed-in edges stay crisp, not torn.</p></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================ 4 · detect ======= -->
+    <section class="scene" data-cam="1.0,0,0|1.05,0,0">
+      <div class="row">
+        <div class="shot">
+          <div class="deck"></div>
+          <div class="deckLine" style="top:34%"></div>
+          <div class="deckLine" style="top:68%"></div>
+          <div class="laptop" style="width:248px;height:150px;top:50%"></div>
+          <div class="clutter" style="left:26px;top:26px;width:66px;height:52px;background:#cfc9c1;border-radius:9px 9px 26px 26px"></div>
+          <div class="clutter" style="right:34px;top:30px;width:46px;height:70px;background:#22252a;border-radius:10px"></div>
+          <div class="bbox"></div>
+          <div class="scanline"></div>
+          <div class="bboxTick" style="left:-3px;top:-3px;border-right:0;border-bottom:0"></div>
+          <div class="bboxTick" style="right:-3px;top:-3px;border-left:0;border-bottom:0"></div>
+          <div class="bboxTick" style="left:-3px;bottom:-3px;border-right:0;border-top:0"></div>
+          <div class="bboxTick" style="right:-3px;bottom:-3px;border-left:0;border-top:0"></div>
+          <div class="chip" style="left:12px;top:12px">laptop · 94%</div>
+        </div>
+        <div class="sideList">
+          <div class="sideItem" style="--i:0"><i class="dot" style="background:var(--amber)"></i><div><b>80 COCO classes</b><span>Identifies what the subject actually is, not just where it is.</span></div></div>
+          <div class="sideItem" style="--i:1"><i class="dot" style="background:var(--amber)"></i><div><b>7.2 MB float16</b><span>Runs off one CPU delegate — no GPU required.</span></div></div>
+          <div class="sideItem" style="--i:2"><i class="dot" style="background:var(--teal)"></i><div><b>Cross-checks the matte</b><span>If the cutout and the detector disagree, the app re-checks before committing.</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= 5 · matte ======= -->
+    <section class="scene" data-cam="1.0,0,0|1.07,0,-8">
+      <div class="pad">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <div class="shot" style="width:680px;height:392px">
+            <div class="checker"></div>
+            <div class="bgPeel"></div>
+            <div class="laptop" style="width:230px;height:140px;top:46%"></div>
+            <div class="clutter" style="left:26px;top:26px;width:60px;height:48px;background:#cfc9c1;border-radius:9px 9px 24px 24px"></div>
+            <div class="matteSweep"></div>
+          </div>
+          <div class="sideList">
+            <div class="sideItem" style="--i:0"><i class="dot" style="background:var(--teal)"></i><div><b>BiRefNet matting</b><span>A trained segmentation model, ~60 MB, cached after the first run.</span></div></div>
+            <div class="sideItem" style="--i:1"><i class="dot" style="background:var(--teal)"></i><div><b>Off the main thread</b><span>WASM inference in a worker, with a watchdog so the UI can never hang.</span></div></div>
+            <div class="sideItem" style="--i:2"><i class="dot" style="background:var(--violet)"></i><div><b>Colour-model fallback</b><span>A custom k-means segmenter takes over when the model can't load.</span></div></div>
+            <div class="sideItem" style="--i:3"><i class="dot" style="background:var(--pink)"></i><div><b>Feathered edges</b><span>Signed-distance alpha keeps anti-aliased edges clean.</span></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= 6 · plan ======= -->
+    <section class="scene" data-cam="1.05,0,0|1,0,0">
+      <div class="pad">
+        <div class="kicker">Stage 03 — the look planner</div>
+        <h2 style="margin-bottom:24px">Every choice, decided <span class="accent">from the pixels</span>.</h2>
+        <div class="planBoard">
+          <div class="planCard">
+            <h4>Shadow</h4>
+            <div class="shadowDemo">
+              <div class="shadowBlob"></div>
+              <div class="shadowCube"></div>
+            </div>
+            <div class="barRow"><div style="font-size:12px;color:var(--muted)">softness</div><div class="bar"><i style="width:calc(20% + var(--p) * 70%)"></i></div></div>
+          </div>
+          <div class="planCard">
+            <h4>Backdrop</h4>
+            <div class="swatchRow">
+              <div class="swatch on" style="background:#f0eee8"></div>
+              <div class="swatch" style="background:#efe3d2"></div>
+              <div class="swatch" style="background:#dcebe4"></div>
+              <div class="swatch" style="background:#dfe9f2"></div>
+              <div class="swatch" style="background:#5a3e2b"></div>
+              <div class="swatch" style="background:#282c30"></div>
+            </div>
+            <div class="btnRow" style="margin-top:14px">
+              <div class="uiBtn on">Studio</div><div class="uiBtn">Warm</div><div class="uiBtn">Mint</div>
+            </div>
+            <div class="barRow"><div style="font-size:12px;color:var(--muted)">recommendation confidence</div><div class="bar"><i style="width:calc(30% + var(--p) * 60%)"></i></div></div>
+          </div>
+          <div class="planCard">
+            <h4>Framing</h4>
+            <div class="btnRow"><div class="uiBtn">4:5</div><div class="uiBtn on">1:1</div><div class="uiBtn">16:9</div></div>
+            <div class="barRow"><div style="font-size:12px;color:var(--muted)">subject size</div><div class="bar"><i style="width:calc(45% + var(--p) * 35%)"></i></div></div>
+            <div class="barRow"><div style="font-size:12px;color:var(--muted)">baseline</div><div class="bar"><i style="width:calc(60% - var(--p) * 20%)"></i></div></div>
+            <div class="barRow"><div style="font-size:12px;color:var(--muted)">contact shadow</div><div class="bar"><i style="width:calc(15% + var(--p) * 80%)"></i></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================== 7 · render ======= -->
+    <section class="scene" data-cam="1.0,0,0|1.02,0,0">
+      <div class="row" style="justify-content:center">
+        <div class="bannerWrap">
+          <div class="banner">
+            <div class="bannerBg"></div>
+            <div class="bannerPool"></div>
+            <div class="bannerShadow"></div>
+            <div class="bannerObj"></div>
+            <div class="zoomBox"></div>
+          </div>
+        </div>
+        <div style="width:560px">
+          <div class="kicker">Stage 04 — render</div>
+          <h2 style="font-size:38px">Composited at listing resolution.</h2>
+          <div class="sub" style="font-size:17px">1080×1350 PNG, ready to upload — with the shadow, the backdrop and the cutout layered in the right order.</div>
+          <div style="margin-top:26px">
+            <div class="kicker" style="margin-bottom:12px">Stage 05 — detail upscale</div>
+            <div class="sharpRow">
+              <div class="edgeDemo edgeSoft"><div class="edgeRamp"></div></div>
+              <div class="pixelGrid">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================== 8 · app ======= -->
+    <section class="scene" data-cam="1.0,0,10|1.03,0,-4">
+      <div class="appFrame">
+        <div class="appBar">
+          <div class="tl" style="background:#ef6461"></div>
+          <div class="tl" style="background:#f4b23e"></div>
+          <div class="tl" style="background:#3fe0c8"></div>
+          <div class="urlPill">relight.app/studio</div>
+          <div class="uiBtn" style="padding:5px 10px">Export PNG</div>
+        </div>
+        <div class="appBody">
+          <div class="appPanel">
+            <h5>1 · Photo</h5>
+            <div class="drop">Drop a photo<br/><span style="opacity:.7">or try the sample</span></div>
+            <h5 style="margin-top:16px">2 · Look</h5>
+            <div class="btnRow"><div class="uiBtn on">Studio</div><div class="uiBtn">Warm</div><div class="uiBtn">Charcoal</div></div>
+            <h5 style="margin-top:16px">3 · Shadow</h5>
+            <div class="barRow"><div style="font-size:11.5px;color:var(--muted)">direction</div><div class="bar"><i style="width:calc(25% + var(--p) * 55%)"></i></div></div>
+            <div class="barRow"><div style="font-size:11.5px;color:var(--muted)">opacity</div><div class="bar"><i style="width:calc(50% + var(--p) * 30%)"></i></div></div>
+            <h5 style="margin-top:16px">4 · Frame</h5>
+            <div class="btnRow"><div class="uiBtn on">4:5</div><div class="uiBtn">1:1</div><div class="uiBtn">16:9</div></div>
+          </div>
+          <div class="appPreview">
+            <div class="split">
+              <div class="splitBefore"></div>
+              <div class="splitAfter"><div class="bannerObj" style="background:linear-gradient(150deg,#1d2529,#0f1417)"></div></div>
+              <div class="splitLine"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="chip" style="position:static;margin-top:14px;background:rgba(167,139,250,.16);color:#cfc0ff;border:1px solid rgba(167,139,250,.4);font-family:var(--font);font-weight:600">
+        Before / after, live — every control re-renders in the browser
+      </div>
+    </section>
+
+    <!-- =============================================== 9 · deploy ======= -->
+    <section class="scene" data-cam="1.05,0,0|1,0,0">
+      <div class="pad">
+        <div class="kicker">Built for constrained hardware</div>
+        <h2 style="margin-bottom:26px">Heavy work never reaches the server.</h2>
+        <div class="badgeGrid">
+          <div class="badgeCard"><div class="glyph gl-te">⚙</div><b>100% on device</b><span>Detection, matting, shadows and upscaling all run in the browser.</span></div>
+          <div class="badgeCard"><div class="glyph gl-am">▲</div><b>Static on Vercel</b><span>No functions, no cold starts, no model bytes in the deploy.</span></div>
+          <div class="badgeCard"><div class="glyph gl-vi">▤</div><b>2-core friendly</b><span>Single-threaded WASM, bounded workers, no SharedArrayBuffer needed.</span></div>
+          <div class="badgeCard"><div class="glyph gl-pk">↺</div><b>Never hangs</b><span>Watchdogs degrade to the built-in engine instead of spinning forever.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================ 10 · outro ======= -->
+    <section class="scene" data-cam="1.0,0,0|1.1,0,0">
+      <div class="center">
+        <h1>Relight</h1>
+        <p class="sub" style="text-align:center">Messy photo in. Listing-ready banner out.<br/>Detect → cut out → plan → render → upscale.</p>
+        <div class="row" style="margin-top:34px">
+          <div class="uiBtn on" style="padding:12px 22px;font-size:15px;border-color:var(--amber);background:rgba(244,178,62,.14);color:var(--ink)">Open the studio</div>
+          <div class="uiBtn" style="padding:12px 22px;font-size:15px">Try the sample photo</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="vig"></div>
+  <div id="chapter"><b id="chapterName">Intro</b></div>
+  <div id="badge"><i></i><span id="badgeName">on-device</span></div>
+  <div id="hud"><div id="hudFill"></div></div>
+</div>
+
+<script>
+(() => {
+  // ---------------------------------------------------------------- timeline
+  const SCENES = [
+    { name: "Intro",               dur: 3.4 },
+    { name: "Problem",             dur: 4.6 },
+    { name: "Workflow",            dur: 9.0 },
+    { name: "Stage 01 · Detect",   dur: 5.4 },
+    { name: "Stage 02 · Matte",    dur: 6.4 },
+    { name: "Stage 03 · Plan",     dur: 5.4 },
+    { name: "Stage 04 + 05",       dur: 6.4 },
+    { name: "The app",             dur: 6.4 },
+    { name: "Deployment",          dur: 3.6 },
+    { name: "Outro",               dur: 3.4 },
+  ];
+
+  const sceneEls = Array.from(document.querySelectorAll(".scene"));
+  const camera = document.getElementById("camera");
+  const hudFill = document.getElementById("hudFill");
+  const chapterName = document.getElementById("chapterName");
+
+  const norm = (name) => name.toLowerCase().replace(/\s+/g, "-");
+  if (sceneEls.length !== SCENES.length) {
+    throw new Error(`scene count mismatch: ${sceneEls.length} elements vs ${SCENES.length} configs`);
+  }
+  sceneEls.forEach((el, i) => el.dataset.key = norm(SCENES[i].name));
+
+  const TOTAL = SCENES.reduce((a, s) => a + s.dur, 0);
+  window.__TOTAL__ = TOTAL;
+  window.__SCENES__ = SCENES.map((s) => ({ ...s, key: norm(s.name) }));
+
+  // Smooth, non-overshooting easing. Everything visual derives from these two.
+  const ease = (t) => t * t * (3 - 2 * t);
+  const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+  /** Parse "scale,x,y|scale,x,y" into from/to camera keys. */
+  function parseCam(spec) {
+    const [a, b] = String(spec || "1,0,0|1,0,0").split("|");
+    const p = (s) => {
+      const [sc, x, y] = s.split(",").map(Number);
+      return { s: sc || 1, x: x || 0, y: y || 0 };
+    };
+    return { from: p(a), to: p(b) };
+  }
+
+  /**
+   * Seek to time `t` (seconds) and paint the frame.
+   *
+   * This is the ONLY entry point the capture tool uses. It is pure: calling it
+   * twice with the same `t` produces identical pixels, which is what makes the
+   * encoded video reproducible.
+   */
+  window.__seek = (t) => {
+    const time = Math.max(0, Math.min(TOTAL, t));
+
+    // Which scene? Walk the cumulative durations.
+    let acc = 0;
+    let idx = SCENES.length - 1;
+    for (let i = 0; i < SCENES.length; i++) {
+      if (time < acc + SCENES[i].dur) { idx = i; break; }
+      acc += SCENES[i].dur;
+    }
+    const scene = SCENES[idx];
+    const local = clamp01((time - acc) / scene.dur);
+
+    for (let i = 0; i < sceneEls.length; i++) {
+      sceneEls[i].classList.toggle("active", i === idx);
+      // --p is the single animation input each scene's CSS reads from.
+      sceneEls[i].style.setProperty("--p", i === idx ? String(local) : "0");
+    }
+
+    const cam = parseCam(sceneEls[idx].dataset.cam);
+    const k = ease(local);
+    camera.style.setProperty("--cam-scale", String(cam.from.s + (cam.to.s - cam.from.s) * k));
+    camera.style.setProperty("--cam-x", `${cam.from.x + (cam.to.x - cam.from.x) * k}px`);
+    camera.style.setProperty("--cam-y", `${cam.from.y + (cam.to.y - cam.from.y) * k}px`);
+
+    hudFill.style.width = `${(time / TOTAL) * 100}%`;
+    chapterName.textContent = scene.name;
+    return { scene: idx, local, total: TOTAL };
+  };
+
+  // Paint the first frame immediately so a screenshot before any seek is valid.
+  window.__seek(0);
+  window.__READY__ = true;
+})();
+</script>
+</body>
+</html>

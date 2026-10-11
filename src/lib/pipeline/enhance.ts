@@ -72,7 +72,7 @@ function toneCurve(rgb: Rgb, plan: EnhancePlan): Rgb {
 function hslGrade(rgb: Rgb, plan: EnhancePlan): Rgb {
   const { hue = 0, sat = 1, lum = 0 } = plan;
   if (hue === 0 && sat === 1 && lum === 0) return rgb;
-  let r = rgb.r, g = rgb.g, b = rgb.b;
+  const r = rgb.r, g = rgb.g, b = rgb.b;
   const mx = Math.max(r, g, b);
   const mn = Math.min(r, g, b);
   let h = 0; let s = 0; const l = (mx + mn) / 2;
@@ -85,7 +85,7 @@ function hslGrade(rgb: Rgb, plan: EnhancePlan): Rgb {
   }
   h = (h + hue / 360 + 1) % 1;
   s = clamp01(s * sat);
-  let l2 = clamp01(l + lum * 0.15);
+  const l2 = clamp01(l + lum * 0.15);
   if (s === 0) return { r: l2, g: l2, b: l2 };
   const q = l2 < 0.5 ? l2 * (1 + s) : l2 + s - l2 * s;
   const p = 2 * l2 - q;
@@ -136,7 +136,19 @@ function makeKernel(radius: number, fn: (dx: number, dy: number) => number) {
   return { arr, size };
 }
 
-function convolve(src: Float32Array, w: number, h: number, kernel: ReturnType<typeof makeKernel>, channel: number): Float32Array {
+function convolve(
+  src: Float32Array,
+  w: number,
+  h: number,
+  kernel: ReturnType<typeof makeKernel>,
+  channel: number,
+  // Pixels per element OF THIS BUFFER. RGBA planes need 4; the single-channel
+  // luminance planes built by `clarity` and `bloom` need 1. Getting this wrong
+  // reads far outside the buffer (Float32Array yields `undefined` → NaN → a
+  // fully black image), which is exactly what happened before this parameter
+  // existed.
+  stride: number = 4,
+): Float32Array {
   const { arr, size } = kernel;
   const half = (size - 1) / 2;
   const out = new Float32Array(w * h);
@@ -151,7 +163,7 @@ function convolve(src: Float32Array, w: number, h: number, kernel: ReturnType<ty
           if (sx < 0 || sx >= w) continue;
           const k = arr[ky * size + kx];
           if (k === 0) continue;
-          const si = (sy * w + sx) * 4 + channel;
+          const si = (sy * w + sx) * stride + channel;
           sum += src[si] * k;
         }
       }
@@ -213,7 +225,7 @@ function clarity(src: Float32Array, w: number, h: number, amount: number): Float
   const lum = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) lum[i] = 0.299 * src[i * 4] + 0.587 * src[i * 4 + 1] + 0.114 * src[i * 4 + 2];
   const k = makeKernel(2, (dx, dy) => Math.exp(-(dx * dx + dy * dy) / 4));
-  const blur = convolve(lum, w, h, k, 0);
+  const blur = convolve(lum, w, h, k, 0, 1);
   const detail = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) detail[i] = lum[i] - blur[i];
   const out = src.slice();
@@ -251,7 +263,7 @@ function bloom(src: Float32Array, w: number, h: number, amount: number): Float32
   const bright = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) bright[i] = Math.max(0, lum[i] - 200) * amount * 0.02;
   const k = makeKernel(8, (dx, dy) => Math.exp(-(dx * dx + dy * dy) / (2 * 8 * 8)));
-  const glow = convolve(bright, w, h, k, 0);
+  const glow = convolve(bright, w, h, k, 0, 1);
   const out = src.slice();
   const glowAmt = amount * 0.6;
   for (let i = 0; i < w * h; i++) {
@@ -305,7 +317,7 @@ export async function enhanceImage(
   const graded = new Float32Array(src.length);
   for (let i = 0; i < w * h; i++) {
     const bi = i * 4;
-    let r = src[bi], g = src[bi + 1], b = src[bi + 2];
+    const r = src[bi], g = src[bi + 1], b = src[bi + 2];
     let c = { r: srgbToLinear8(r), g: srgbToLinear8(g), b: srgbToLinear8(b) };
     c = grade(c);
     c = curve(c);

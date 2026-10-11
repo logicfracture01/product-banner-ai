@@ -107,8 +107,7 @@ export function generateDesign(analysis: StyleAnalysis | null, seed: number): Ge
   let productHue = 0;
   let productSat = 0;
   if (analysis && analysis.palette.length > 0) {
-    // read the most saturated palette color
-    let best = 0;
+    // read the most saturated palette colour (its hue drives the harmony)
     for (const hex of analysis.palette) {
       const r = parseInt(hex.slice(1, 3), 16) / 255;
       const g = parseInt(hex.slice(3, 5), 16) / 255;

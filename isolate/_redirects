@@ -1,3 +1,0 @@
-# SPA fallback: every route resolves to the app shell so deep links
-# (/studio, /dashboard, …) work on a static host.
-/*    /index.html   200

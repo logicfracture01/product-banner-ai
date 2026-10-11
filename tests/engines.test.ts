@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { upscaleImage } from "../src/lib/pipeline/upscale";
 import { generateDesign, makeRng, randomSeed } from "../src/lib/pipeline/design";
 import { analyzeCutout, recommendStyles } from "../src/lib/pipeline/styles";
-import { segment, type Cutout } from "../src/lib/pipeline/segment";
+import type { Cutout } from "../src/lib/pipeline/segment";
 
 // ---------------------------------------------------------------- fixtures
 
@@ -214,6 +214,8 @@ describe("product analysis v2 attributes", () => {
     const a = analyzeCutout(makeCutout());
     const rec = recommendStyles(a);
     expect(rec.length).toBe(5);
-    new Set(rec).size === rec.length;
+    // This used to be a bare comparison whose result was thrown away, so the
+    // uniqueness claim in the test's name was never actually checked.
+    expect(new Set(rec).size).toBe(rec.length);
   });
 });

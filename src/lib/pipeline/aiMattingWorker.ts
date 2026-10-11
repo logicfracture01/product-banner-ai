@@ -50,7 +50,23 @@ function loadPipeline(): Promise<BackgroundRemovalPipeline | null> {
     pipePromise = (async () => {
       try {
         // Workers have no DOM; make sure transformers.js doesn't try to use one.
-        if (env.backends.onnx.wasm) env.backends.onnx.wasm.proxy = false;
+        if (env.backends.onnx.wasm) {
+          env.backends.onnx.wasm.proxy = false;
+          // SINGLE THREADED, deliberately.
+          //
+          // ORT's threaded build needs SharedArrayBuffer, which browsers only
+          // expose to cross-origin-isolated pages — i.e. responses carrying
+          // COOP: same-origin + COEP: require-corp. Turning those on would
+          // block the cross-origin model/weights fetch this whole stage depends
+          // on (HuggingFace's CDN does not send CORP headers), so isolation is
+          // not an option here and multi-threaded Wasm is unavailable anyway.
+          //
+          // It would not help much regardless: the deployment target is a
+          // 2-core box, where one worker thread is already most of a core, and
+          // pinning the thread count keeps inference time *predictable* rather
+          // than letting ORT oversubscribe the machine it shares with the UI.
+          env.backends.onnx.wasm.numThreads = 1;
+        }
         return (await pipeline("background-removal", MODEL_ID, {
           dtype: "fp32",
           progress_callback: (info: { status?: string; progress?: number }) => {

@@ -1,10 +1,16 @@
 // Platform utilities shared by the pipeline engines (segment / shadow / upscale).
 
-/** Clamp a byte value into [0, 255]. */
+/** Clamp a byte value into [0, 255].
+ *
+ *  Rounds to the nearest integer rather than truncating: pixel math routinely
+ *  lands on values like 172.99998 that should be 173. Truncating here silently
+ *  darkens every channel by up to 1, which breaks the bit-exactness guarantees
+ *  the upscale engine documents (a constant field must stay constant).
+ */
 export function clamp255(v: number): number {
   if (v < 0) return 0;
   if (v > 255) return 255;
-  return v & 0xff;
+  return Math.round(v);
 }
 
 /** 8-connected neighborhood dilation by radius 1. */
@@ -83,51 +89,38 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
   if (r === 0) return src.slice();
   const tmp = new Float32Array(src.length);
   const out = new Float32Array(src.length);
+  const win = 2 * r + 1;
+  const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
 
-  // horizontal
+  // horizontal pass (clamp-to-edge), strided by channelCount
   for (let y = 0; y < h; y++) {
     const row = y * w * channelCount;
     for (let c = 0; c < channelCount; c++) {
       let sum = 0;
-      let cnt = 0;
-      for (let x = 0; x < w + r; x++) {
-        if (x < w) {
-          sum += src[row + x + c];
-          cnt++;
-        }
-        if (x >= 2 * r + 1) {
-          const k = x - 2 * r - 1;
-          if (k >= 0 && k < w) {
-            sum -= src[row + k + c];
-            cnt--;
-          }
-        }
-        if (x >= r && x < w) {
-          tmp[(y * w + (x - r)) + c] = sum / cnt;
-        }
+      for (let k = -r; k <= r; k++) {
+        sum += src[row + clamp(k, w - 1) * channelCount + c];
+      }
+      for (let x = 0; x < w; x++) {
+        tmp[row + x * channelCount + c] = sum / win;
+        const drop = clamp(x - r, w - 1);
+        const add = clamp(x + r + 1, w - 1);
+        sum += src[row + add * channelCount + c] - src[row + drop * channelCount + c];
       }
     }
   }
-  // vertical
+
+  // vertical pass
   for (let x = 0; x < w; x++) {
     for (let c = 0; c < channelCount; c++) {
       let sum = 0;
-      let cnt = 0;
-      for (let y = 0; y < h + r; y++) {
-        if (y < h) {
-          sum += tmp[(y * w + x) + c];
-          cnt++;
-        }
-        if (y >= 2 * r + 1) {
-          const k = y - 2 * r - 1;
-          if (k >= 0 && k < h) {
-            sum -= tmp[(k * w + x) + c];
-            cnt--;
-          }
-        }
-        if (y >= r && y < h) {
-          out[((y - r) * w + x) + c] = sum / cnt;
-        }
+      for (let k = -r; k <= r; k++) {
+        sum += tmp[(clamp(k, h - 1) * w + x) * channelCount + c];
+      }
+      for (let y = 0; y < h; y++) {
+        out[(y * w + x) * channelCount + c] = sum / win;
+        const drop = clamp(y - r, h - 1);
+        const add = clamp(y + r + 1, h - 1);
+        sum += tmp[(add * w + x) * channelCount + c] - tmp[(drop * w + x) * channelCount + c];
       }
     }
   }
