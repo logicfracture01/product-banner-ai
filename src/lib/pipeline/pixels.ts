@@ -137,3 +137,14 @@ export function mulberry32(a: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+/** Luminance of an 8-bit RGB pixel (Rec. 709). */
+export function luminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+/** Smoothstep between 0 and 1. */
+export function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0 || 1)));
+  return t * t * (3 - 2 * t);
+}

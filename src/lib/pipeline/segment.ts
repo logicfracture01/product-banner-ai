@@ -59,151 +59,8 @@ export type SegmentOptions = {
   noRetry?: boolean;
 };
 
-import { clamp255, boxDilate8 } from "./pixels";
-
-// ---------------------------------------------------------------- utilities
-
-/**
- * Compact RGB k-means over packed 0xRRGGBB samples (a Uint32Array with `count`
- * valid entries — typed arrays keep the hot path free of boxed doubles).
- *
- * Init: luminance-quantile seeding — a cheap k-means++ stand-in that spreads
- * centers across the tonal range instead of letting them cluster.
- * Runs at most `iters` Lloyd iterations, early-exits when assignments stop
- * moving. Used ONLY for the background model (Stage 1) and palette extraction
- * in styles.ts; not a general-purpose clusterer.
- */
-function kmeans(
-  count: number,
-  samples: Uint32Array, // packed rgb (r<<16|g<<8|b), first `count` entries valid
-  k: number,
-  iters = 10,
-): Array<[number, number, number]> {
-  if (count === 0) return [[255, 255, 255]];
-  if (count <= k) {
-    const out: Array<[number, number, number]> = [];
-    for (let i = 0; i < count; i++) out.push(unpackPacked(samples[i]));
-    return out;
-  }
-
-  // spreading init: sort by luminance and pick quantile seeds.
-  // Pack luminance into the high bits and index into the low bits, then sort
-  // the combined value — avoids allocating a parallel array of pairs.
-  const keyed = new Uint32Array(count);
-  for (let i = 0; i < count; i++) {
-    const s = samples[i];
-    const lum = ((s >> 16) & 255) + ((s >> 8) & 255) + (s & 255); // 0..765 -> 10 bits
-    keyed[i] = (lum << 22) | i;
-  }
-  const sorted = keyed.slice().sort();
-  const unpack = unpackPacked;
-  const centers: Array<[number, number, number]> = [];
-  for (let c = 0; c < k; c++) {
-    const idx = Math.min(
-      sorted.length - 1,
-      Math.floor(((c + 0.5) / k) * sorted.length),
-    );
-    centers.push(unpack(sorted[idx]));
-  }
-
-  const assign = new Uint8Array(count);
-  for (let iter = 0; iter < iters; iter++) {
-    let moved = false;
-    for (let i = 0; i < count; i++) {
-      const [r, g, b] = unpack(samples[i]);
-      let bi = 0;
-      let bd = Infinity;
-      for (let c = 0; c < centers.length; c++) {
-        const [cr, cg, cb] = centers[c];
-        const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
-        if (d < bd) {
-          bd = d;
-          bi = c;
-        }
-      }
-      if (assign[i] !== bi) {
-        assign[i] = bi;
-        moved = true;
-      }
-    }
-    if (!moved && iter > 0) break;
-    const sums = centers.map(() => [0, 0, 0, 0]);
-    for (let i = 0; i < count; i++) {
-      const a = sums[assign[i]];
-      const [r, g, b] = unpack(samples[i]);
-      a[0] += r;
-      a[1] += g;
-      a[2] += b;
-      a[3]++;
-    }
-    for (let c = 0; c < centers.length; c++) {
-      if (sums[c][3] > 0) {
-        centers[c] = [sums[c][0] / sums[c][3], sums[c][1] / sums[c][3], sums[c][2] / sums[c][3]];
-      }
-    }
-  }
-  return centers;
-}
-
-/** Unpack a packed rgb uint32 into [r, g, b]. */
-function unpackPacked(s: number): [number, number, number] {
-  return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
-}
-
-/**
- * Weighted distance from a pixel to the nearest background cluster center.
- * The per-axis scale (derived from cluster spread) makes dark and light
- * backdrops equally tractable — plain Euclidean under-weights color axes
- * that happen to be tight, causing leaks on saturated backdrops.
- */
-function bgDistance(
-  r: number,
-  g: number,
-  b: number,
-  centers: Array<[number, number, number]>,
-  scale: [number, number, number],
-): number {
-  let best = Infinity;
-  for (const [cr, cg, cb] of centers) {
-    const dr = (r - cr) / scale[0];
-    const dg = (g - cg) / scale[1];
-    const db = (b - cb) / scale[2];
-    const d = Math.sqrt(dr * dr + dg * dg + db * db);
-    if (d < best) best = d;
-  }
-  return best;
-}
-
-/**
- * Sobel gradient magnitude on the luminance channel (0..255 per pixel).
- * Border pixels are left 0 — the flood seeds on the frame anyway.
- */
-function sobel(rgba: Uint8ClampedArray, w: number, h: number): Float32Array {
-  const n = w * h;
-  const lum = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const p = i * 4;
-    lum[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
-  }
-  const edge = new Float32Array(n);
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const i = y * w + x;
-      const tl = lum[i - w - 1];
-      const t = lum[i - w];
-      const tr = lum[i - w + 1];
-      const l = lum[i - 1];
-      const r = lum[i + 1];
-      const bl = lum[i + w - 1];
-      const b = lum[i + w];
-      const br = lum[i + w + 1];
-      const gx = tl + 2 * l + bl - (tr + 2 * r + br);
-      const gy = tl + 2 * t + tr - (bl + 2 * b + br);
-      edge[i] = Math.min(255, Math.hypot(gx, gy));
-    }
-  }
-  return edge;
-}
+import { boxBlur3, clamp255, mulberry32, boxDilate8 } from "./pixels";
+const boxDilate = boxDilate8;
 
 /** Chebyshev-ish chamfer distance inside the given binary mask. */
 function distanceInside(fg: Uint8Array, w: number, h: number): Float32Array {
@@ -254,62 +111,6 @@ function signedDistance(fg: Uint8Array, w: number, h: number): Float32Array {
 }
 
 function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
-  if (r !== 1) {
-    const tmp = new Uint8Array(src.length);
-    const out = new Uint8Array(src.length);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let v = 1;
-        for (let dx = -r; dx <= r; dx++) {
-          const xx = x + dx;
-          if (xx < 0 || xx >= w || !src[y * w + xx]) {
-            v = 0;
-            break;
-          }
-        }
-        tmp[y * w + x] = v;
-      }
-    }
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let v = 1;
-        for (let dy = -r; dy <= r; dy++) {
-          const yy = y + dy;
-          if (yy < 0 || yy >= h || !tmp[yy * w + x]) {
-            v = 0;
-            break;
-          }
-        }
-        out[y * w + x] = v;
-      }
-    }
-    return out;
-  }
-  const tmp = new Uint8Array(src.length);
-  const out = new Uint8Array(src.length);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let v = 1;
-      const xx = x;
-      if (xx < 0 || xx >= w || !src[y * w + x - 1] || !src[y * w + x] || !src[y * w + x + 1]) {
-        v = 0;
-      }
-      tmp[y * w + x] = v;
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let v = 1;
-      const yy = y;
-      if (yy < 0 || yy >= h || !tmp[(y - 1) * w + x] || !tmp[y * w + x] || !tmp[(y + 1) * w + x]) {
-        v = 0;
-      }
-      out[y * w + x] = v;
-    }
-  }
-  return out;
-}
-
   const tmp = new Uint8Array(src.length);
   const out = new Uint8Array(src.length);
   for (let y = 0; y < h; y++) {
@@ -340,7 +141,6 @@ function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array 
   }
   return out;
 }
-
 
 /** Background pixels not reachable from the border become foreground. */
 function fillHoles(fg: Uint8Array, w: number, h: number): Uint8Array {
@@ -432,20 +232,9 @@ function segmentPass(
   const n = width * height;
 
   // ---- Stage 1: edge map + background color model -------------------------
-  // Edges: Sobel magnitude — used BOTH to stop the flood (Stage 2) and later
-  // to sharpen the alpha ramp where the contour is high-contrast (Stage 4).
-  // Background model: sample a ring just inside the frame (product photos
-  // nearly always show clear backdrop at the borders), k-means into ≤4
-  // clusters. Multi-cluster handles walls+desk seams and gradients that a
-  // single threshold cannot represent.
   const edge = sobel(rgba, width, height);
   const EDGE_STRONG = 60;
 
-  // Sample the border ring (product photos nearly always have clear backdrop
-  // at the frame) and model it with k-means. Up to 4 clusters capture
-  // multi-tone walls, desk edges, and gradients.
-  // Typed array (not number[]): avoids boxing ~100k+ doubles per pass and
-  // keeps the retry passes' GC pressure near zero.
   const ring = Math.max(2, Math.round(Math.min(width, height) * 0.06));
   const maxSamples = Math.ceil(width / 2) * Math.ceil(ring / 2) * 2 * 2 + Math.ceil((height - 2 * ring) / 2) * Math.ceil(ring / 2) * 2 * 2;
   const samples = new Uint32Array(maxSamples);
@@ -469,14 +258,12 @@ function segmentPass(
   }
   const bgCenters = kmeans(sc, samples, 4);
 
-  // Per-axis scale from cluster spread: tight axes weigh more.
   const scale: [number, number, number] = [12, 12, 12];
   {
     let sr = 0;
     let sg = 0;
     let sb = 0;
     for (const [r, g, b] of bgCenters) {
-      // distance from the median cluster acts as a spread proxy
       sr += r;
       sg += g;
       sb += b;
@@ -492,30 +279,24 @@ function segmentPass(
       vg += (g - mg) ** 2;
       vb += (b - mb) ** 2;
     }
-    // wider spread -> larger scale -> more permissive per channel
     scale[0] = Math.max(8, Math.sqrt(vr / bgCenters.length) * 0.75 + 6);
     scale[1] = Math.max(8, Math.sqrt(vg / bgCenters.length) * 0.75 + 6);
     scale[2] = Math.max(8, Math.sqrt(vb / bgCenters.length) * 0.75 + 6);
   }
 
   // ---- Stage 2: model-guided, edge-stopped flood from the borders ---------
-  // BFS from border seeds. A neighbor joins the background when its color is
-  // close enough to ANY cluster (`cutoff` = tolerance/12, i.e. ~2.2σ at the
-  // default 26) AND the Sobel edge under it is weak. Near edges the threshold
-  // is damped (edgeDamp) so the fill never crosses a product contour — this
-  // is what keeps dark products on dark desks separable.
   const flood = new Uint8Array(n);
   const stack = new Int32Array(n);
   let sp = 0;
   const seeds = new Set<number>();
   const step = Math.max(2, Math.round(Math.min(width, height) / 24));
   for (let x = 0; x < width; x += step) {
-    seeds.add(x); // top row (y = 0)
-    seeds.add((height - 1) * width + x); // bottom row
+    seeds.add(x);
+    seeds.add((height - 1) * width + x);
   }
   for (let y = 0; y < height; y += step) {
-    seeds.add(y * width); // left column
-    seeds.add(y * width + width - 1); // right column
+    seeds.add(y * width);
+    seeds.add(y * width + width - 1);
   }
   for (const s of seeds) {
     if (!flood[s]) {
@@ -524,8 +305,7 @@ function segmentPass(
   }
 
   const touchedEdges = new Set<number>();
-  // tolerance acts as a multiplier on the normalized model distance
-  const cutoff = tolerance / 12; // 26 -> ~2.2 sigma-ish
+  const cutoff = tolerance / 12;
   while (sp > 0) {
     const i = stack[--sp];
     flood[i] = 1;
@@ -545,7 +325,6 @@ function segmentPass(
       if (edge[j] > EDGE_STRONG) continue;
       const q = j * 4;
       const dist = bgDistance(rgba[q], rgba[q + 1], rgba[q + 2], bgCenters, scale);
-      // edges damp acceptance: near an edge we demand a much closer match
       const edgeDamp = 1 - Math.min(1, edge[j] / EDGE_STRONG) * 0.65;
       if (dist <= cutoff * edgeDamp) {
         stack[sp++] = j;
@@ -554,19 +333,10 @@ function segmentPass(
     if (sp >= n) break;
   }
 
-  // ---- Stage 3: cleanup — shave, opening, components, ranking, holes ------
-  // Invert the flood: unreached pixels = foreground candidates. The flood
-  // leaves a 1–2px blend band on every contour (Sobel spans two pixels at a
-  // step edge), so: contour shave → opening → component ranking → closing →
-  // hole fill. See the candidate-ranking block below for the scoring model.
+  // ---- Stage 3: cleanup -------------------------------------------------
   const fg0 = new Uint8Array(n);
   for (let i = 0; i < n; i++) fg0[i] = flood[i] ? 0 : 1;
 
-  // Contour shave: the edge-stopped flood leaves a 1–2px band of unreached
-  // background pixels hugging every contour (Sobel responses span two pixels
-  // at a step edge). Release any foreground pixel that touches background
-  // AND is still colorimetrically very close to the bg model. This snaps the
-  // mask down to the visual boundary without touching product interiors.
   const shaveCutoff = cutoff * 0.5;
   const shaved = new Uint8Array(fg0);
   for (let y = 0; y < height; y++) {
@@ -593,8 +363,6 @@ function segmentPass(
   const minSize = Math.max(24, n * 0.004);
   const compCount = sizes.length;
 
-  // Per-component statistics in a single pass: area, centroid, bbox, and how
-  // much of the component sits on the frame border (a clutter/leak cue).
   const compArea = new Float64Array(compCount);
   const compSumX = new Float64Array(compCount);
   const compSumY = new Float64Array(compCount);
@@ -619,13 +387,9 @@ function segmentPass(
     }
   }
 
-  // Rank every meaningful component as a product candidate. A product is:
-  // reasonably large (but not the whole frame), near the image center, and
-  // not glued to the photo border.
   const maxDist = Math.hypot(width, height) / 2;
   const scoreOf = (c: number): number => {
     const af = compArea[c] / n;
-    // peaked size score: rewards 18%+ of frame, punishes near-total coverage
     const sizeScore = af >= 0.85 ? 0.15 : Math.min(1, af / 0.18);
     const ccx = compSumX[c] / compArea[c];
     const ccy = compSumY[c] / compArea[c];
@@ -638,15 +402,12 @@ function segmentPass(
   for (let c = 0; c < compCount; c++) {
     keep[c] = sizes[c] >= minSize ? 1 : 0;
   }
-  // If nothing qualifies (very small product), keep the largest component.
   if (keep.every((v) => v === 0) && compCount > 0) {
     let big = 0;
     for (let c = 1; c < compCount; c++) if (sizes[c] > sizes[big]) big = c;
     keep[big] = 1;
   }
 
-  // Ranked candidates (best-first), and the primary object drives the bbox so
-  // background clutter never inflates the product framing.
   const ranked: number[] = [];
   for (let c = 0; c < compCount; c++) if (keep[c]) ranked.push(c);
   ranked.sort((a, b) => scoreOf(b) - scoreOf(a));
@@ -669,16 +430,10 @@ function segmentPass(
   const filled = fillHoles(closedPair, width, height);
 
   // ---- Stage 4: signed-distance alpha matting + decontamination ----------
-  // Alpha ramps smoothly across the contour: the signed distance field is
-  // negative inside / positive outside, and the band half-width adapts to
-  // edge strength (strong edge = tight ±1px mat, soft edge = ±2.5px). Edge
-  // band pixels are DECONTAMINATED: their color is unmixed off the
-  // bg→product line so neither dark nor light environment fringes survive.
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;
   const sd = signedDistance(filled, width, height);
 
-  // Precompute background mean color for decontamination blending.
   let br = 0;
   let bg2 = 0;
   let bb = 0;
@@ -695,11 +450,6 @@ function segmentPass(
   bcount = Math.max(1, bcount);
   const bgMean = [br / bcount, bg2 / bcount, bb / bcount];
 
-  // Edge-band decontamination context: for each contour pixel, estimate the
-  // true product color by walking INWARD along the signed-distance gradient.
-  // The old one-sided heuristic (only darken toward bgMean) left bright
-  // environment fringes intact — the most common "background remover still
-  // keeps edges of the environment" complaint.
   const sdGradX = new Float32Array(n);
   const sdGradY = new Float32Array(n);
   for (let y = 1; y < height - 1; y++) {
@@ -712,10 +462,8 @@ function segmentPass(
 
   for (let i = 0; i < n; i++) {
     const d = sd[i];
-    // adaptive band: strong edges get a tight mat (crisp silhouettes), soft
-    // edges a wider one (hair, fabric) — fixed ±1.5px kept fringes on both.
     const ec = Math.min(1, edge[i] / 255);
-    const band = 1 + (1 - ec) * 1.5; // 1.0..2.5 px half-width
+    const band = 1 + (1 - ec) * 1.5;
     let a: number;
     if (d <= -band) {
       a = 255;
@@ -729,10 +477,6 @@ function segmentPass(
     }
     const p = i * 4;
 
-    // two-sided decontamination for the whole transition band: project the
-    // pixel color onto the line between the estimated product color (a few
-    // px inside) and the background model. Removes BOTH dark and light
-    // environment fringes, not just one side.
     let or_ = rgba[p];
     let og = rgba[p + 1];
     let ob = rgba[p + 2];
@@ -740,7 +484,6 @@ function segmentPass(
       const x = i % width;
       const y = (i / width) | 0;
       const gl = Math.hypot(sdGradX[i], sdGradY[i]) || 1;
-      // walk 2px toward the product interior
       const stepIn = 2;
       const ix = Math.round(Math.max(0, Math.min(width - 1, x + (sdGradX[i] / gl) * -stepIn)));
       const iy = Math.round(Math.max(0, Math.min(height - 1, y + (sdGradY[i] / gl) * -stepIn)));
@@ -749,14 +492,10 @@ function segmentPass(
       const pg = rgba[ip + 1];
       const pb = rgba[ip + 2];
       const mix = a / 255;
-      // pull the observed color off the bg->product line by the alpha mix:
-      // unmix C = bg + mix*(product - bg)  =>  product_est = bg + (C - bg)/max(mix,0.25)
       const inv = 1 / Math.max(0.25, mix);
       const estR = bgMean[0] + (or_ - bgMean[0]) * inv;
       const estG = bgMean[1] + (og - bgMean[1]) * inv;
       const estB = bgMean[2] + (ob - bgMean[2]) * inv;
-      // blend the unmix estimate with the inward sample (guards against
-      // walking into a different-colored interior region)
       const wIn = 0.45;
       or_ = clamp255((estR * (1 - wIn) + pr * wIn) * 0.35 + or_ * 0.65);
       og = clamp255((estG * (1 - wIn) + pg * wIn) * 0.35 + og * 0.65);
@@ -770,17 +509,6 @@ function segmentPass(
   }
 
   // ---- confidence ---------------------------------------------------------
-  // A calibrated 0..1 quality score surfaced in the UI (green/amber/red).
-  // Four weighted signals, chosen so a clean studio shot scores ~0.95+ and an
-  // ambiguous low-contrast scene drops below 0.5:
-  //   rawSep (35%)   — literal RGB distance of fg pixels from the bg model.
-  //                    The single best signal: a product 180 levels from the
-  //                    backdrop is unambiguous; 36 levels is not.
-  //   edgeSup (30%)  — share of boundary pixels sitting on a strong Sobel
-  //                    gradient (did we land on the REAL contour?).
-  //   separ. (20%)   — normalized model distance (secondary to rawSep).
-  //   compact (15%)  — 4πA/P² shape regularity; blob-like cuts score higher
-  //                    than ragged, leaky boundaries.
   let sepSum = 0;
   let sepCount = 0;
   for (let i = 0; i < n; i += 7) {
@@ -798,7 +526,7 @@ function segmentPass(
     sepCount++;
   }
   const rawSep = sepCount > 0 ? Math.min(1, sepSum / sepCount / 120) : 0;
-  // normalized separation kept as a secondary term
+
   let sepSum2 = 0;
   for (let i = 0; i < n; i += 7) {
     if (!filled[i]) continue;
@@ -807,7 +535,6 @@ function segmentPass(
   }
   const separation = sepCount > 0 ? Math.min(1, (sepSum2 / sepCount) / 4) : 0;
 
-  // 2. contour edge support: strong Sobel gradients along the boundary
   let contourHits = 0;
   let contourTotal = 0;
   for (let i = 0; i < n; i++) {
@@ -825,7 +552,6 @@ function segmentPass(
   }
   const edgeSupport = contourTotal > 0 ? contourHits / contourTotal : 0;
 
-  // 3. compactness: perimeter^2 / area near 4pi means blob-like (clean cut)
   let area = 0;
   for (let i = 0; i < n; i++) if (filled[i]) area++;
   const compactness = area > 0 ? Math.min(1, (4 * Math.PI * area) / (contourTotal * contourTotal + 1)) : 0;
@@ -884,17 +610,7 @@ function segmentPass(
 
 // ---------------------------------------------------------------- public API
 
-/**
- * Segment with auto-retry. Runs one pass, detects classic failure modes, and
- * re-runs with adapted tolerance when the evidence says the first pass lost:
- *
- *   A. whole-frame leak (box ≈ frame)      → retry much tighter (×0.55)
- *   B. nothing found (area < 0.5%)         → retry much looser (×1.8)
- *   C. low confidence (< 0.35)             → try BOTH directions, keep best
- *
- * Each retry keeps the better pass by confidence, so the function can only
- * improve on the first attempt. `noRetry` skips everything (used by tests and
- * the internal refinement path where the caller controls tolerance).
+/**\n * Segment with auto-retry.
  */
 export function segment(
   rgba: Uint8ClampedArray,
@@ -905,15 +621,13 @@ export function segment(
   const tolerance = opts.tolerance ?? 26;
   const softness = opts.softness ?? 2;
 
-  const first = segmentPass(rgba, width, height, tolerance, softness);
+  const first = segmentPassSep(rgba, width, height, tolerance, softness);
   if (opts.noRetry) return first;
 
   const areaFrac =
     (first.box.w * first.box.h) / (width * height);
 
-  // Failure mode A: fill leaked everywhere (whole frame kept).
   if (first.box.w > width * 0.97 && first.box.h > height * 0.97) {
-    // try a much tighter tolerance
     const tighter = segmentPass(
       rgba,
       width,
@@ -926,7 +640,6 @@ export function segment(
     return first;
   }
 
-  // Failure mode B: nothing usable found (tiny or zero foreground).
   if (areaFrac < 0.005) {
     const looser = segmentPass(
       rgba,
@@ -940,7 +653,6 @@ export function segment(
     return first;
   }
 
-  // Failure mode C: low-confidence pass — one adaptive retry either way.
   if (first.confidence < 0.35) {
     const tighter = segmentPass(
       rgba,
@@ -948,7 +660,7 @@ export function segment(
       height,
       Math.max(10, tolerance * 0.7),
       softness,
-      );
+    );
     const looser = segmentPass(
       rgba,
       width,
@@ -963,4 +675,124 @@ export function segment(
   }
 
   return first;
+}
+
+// ---------------------------------------------------------------- internal: kmeans, bgDistance, sobel
+
+function kmeans(
+  count: number,
+  samples: Uint32Array,
+  k: number,
+  iters = 10,
+): Array<[number, number, number]> {
+  if (count === 0) return [[255, 255, 255]];
+  if (count <= k) {
+    const out: Array<[number, number, number]> = [];
+    for (let i = 0; i < count; i++) out.push(unpackPacked(samples[i]));
+    return out;
+  }
+
+  const keyed = new Uint32Array(count);
+  for (let i = 0; i < count; i++) {
+    const s = samples[i];
+    const lum = ((s >> 16) & 255) + ((s >> 8) & 255) + (s & 255);
+    keyed[i] = (lum << 22) | i;
+  }
+  const sorted = keyed.slice().sort();
+  const unpack = unpackPacked;
+  const centers: Array<[number, number, number]> = [];
+  for (let c = 0; c < k; c++) {
+    const idx = Math.min(
+      sorted.length - 1,
+      Math.floor(((c + 0.5) / k) * sorted.length),
+    );
+    centers.push(unpack(sorted[idx]));
+  }
+
+  const assign = new Uint8Array(count);
+  for (let iter = 0; iter < iters; iter++) {
+    let moved = false;
+    for (let i = 0; i < count; i++) {
+      const [r, g, b] = unpack(samples[i]);
+      let bi = 0;
+      let bd = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const [cr, cg, cb] = centers[c];
+        const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
+        if (d < bd) {
+          bd = d;
+          bi = c;
+        }
+      }
+      if (assign[i] !== bi) {
+        assign[i] = bi;
+        moved = true;
+      }
+    }
+    if (!moved && iter > 0) break;
+    const sums = centers.map(() => [0, 0, 0, 0]);
+    for (let i = 0; i < count; i++) {
+      const a = sums[assign[i]];
+      const [r, g, b] = unpack(samples[i]);
+      a[0] += r;
+      a[1] += g;
+      a[2] += b;
+      a[3]++;
+    }
+    for (let c = 0; c < centers.length; c++) {
+      if (sums[c][3] > 0) {
+        centers[c] = [sums[c][0] / sums[c][3], sums[c][1] / sums[c][3], sums[c][2] / sums[c][3]];
+      }
+    }
+  }
+  return centers;
+}
+
+function unpackPacked(s: number): [number, number, number] {
+  return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
+}
+
+function bgDistanceSep(
+  r: number,
+  g: number,
+  b: number,
+  centers: Array<[number, number, number]>,
+  scale: [number, number, number],
+): number {
+  let best = Infinity;
+  for (const [cr, cg, cb] of centers) {
+    const dr = (r - cr) / scale[0];
+    const dg = (g - cg) / scale[1];
+    const db = (b - cb) / scale[2];
+    const d = Math.sqrt(dr * dr + dg * dg + db * db);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function sobel(rgba: Uint8ClampedArray, w: number, h: number): Float32Array {
+  const n = w * h;
+  const lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    lum[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
+  }
+  const edge = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const tl = lum[i - w - 1];
+      const t = lum[i - w];
+      const tr = lum[i - w + 1];
+      const l = lum[i - 1];
+      const r = lum[i + 1];
+      const bl = lum[i + w - 1];
+      const b = lum[i + w];
+      const br = lum[i + w + 1];
+      const gx = tl + 2 * l + bl - (tr + 2 * r + br);
+      const gy = tl + 2 * t + tr - (bl + 2 * b + br);
+      edge[i] = Math.min(255, Math.hypot(gx, gy));
+    }
+  }
+  return edge;
 }

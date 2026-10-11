@@ -1,19 +1,22 @@
 import { ObjectDetector } from "@mediapipe/tasks-vision";
-import { WasmFileset } from "@mediapipe/tasks-vision";
 
-declare global {
-  interface Window {
-    loadVisionWasmFileset: (opts: string) => Promise<WasmFileset>;
-  }
-}
+type WasmFilesetConfig = {
+  wasmPath: string;
+  wasmBinaryPath: string;
+};
 
 export async function loadObjectDetector(): Promise<ObjectDetector> {
-  const wasmFileset = await window.loadVisionWasmFileset({
+  type W = {
+    loadVisionWasmFileset: (cfg: WasmFilesetConfig) => Promise<unknown>;
+  };
+  const shim = (window as unknown as W).loadVisionWasmFileset;
+  if (!shim) throw new Error("MediaPipe vision wasm loader not available");
+  const fileset = await shim({
     wasmPath: "/mediapipe-tasks-vision/wasm",
     wasmBinaryPath: "/mediapipe-tasks-vision/wasm",
   });
   return ObjectDetector.createFromModelPath(
-    wasmFileset,
+    fileset as Parameters<typeof ObjectDetector.createFromModelPath>[0],
     "/mediapipe-models/object-detector/float16 {}.rescore_v16_ng_g1/saved_model_2",
   );
 }
@@ -27,26 +30,22 @@ export interface DetectResult {
 
 export async function detectObject(
   detector: ObjectDetector,
-  image: HTMLImageElement | HTMLCanvasElement | ImageBitmap | ImageData
+  image: HTMLImageElement | HTMLCanvasElement | ImageBitmap | ImageData,
 ): Promise<DetectResult[]> {
   const results = await detector.detect(image);
-  if (!results.detections) return [];
+  if (!results.detections || !results.detections.length) return [];
 
-  return results.detections.map((d) => ({
-    bbox: {
-      xMin: d.boundingBox.origin.x,
-      yMin: d.boundingBox.origin.y,
-      xMax: d.boundingBox.origin.x + d.boundingBox.size.width,
-      yMax: d.boundingBox.origin.y + d.boundingBox.size.height,
-    },
-    confidence: d.categories
-      ? Math.max(...d.categories.map((c) => c.score ?? 0))
-      : 0,
-    label: d.categories
-      ? d.categories[0].categoryName ?? ""
-      : "",
-    categoryIndex: d.categories
-      ? d.categories[0].categoryIndex
-      : -1,
-  })).filter((r) => r.confidence > 0.35);
+  return results.detections.map((d) => {
+    const categories = d.categories && d.categories.length ? d.categories : undefined;
+    const bestCategory = categories && categories[0] ? categories[0] : undefined;
+    const bbox = d.boundingBox;
+    return {
+      bbox: bbox
+        ? { xMin: bbox.originX, yMin: bbox.originY, xMax: bbox.originX + bbox.width, yMax: bbox.originY + bbox.height }
+        : { xMin: 0, yMin: 0, xMax: 0, yMax: 0 },
+      confidence: categories ? Math.max(...categories.map((c) => c.score ?? 0)) : 0,
+      label: bestCategory ? (bestCategory.categoryName ?? "") : "",
+      categoryIndex: bestCategory && bestCategory.categoryIndex !== undefined ? bestCategory.categoryIndex : -1,
+    };
+  }).filter((r) => r.confidence > 0.35);
 }
