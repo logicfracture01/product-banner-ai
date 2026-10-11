@@ -79,7 +79,7 @@ export function distanceOutside(bin: Uint8Array, w: number, h: number): Float32A
  *  one-channel Float32Arrays here).
  */
 export function boxBlur3(src: Float32Array, w: number, h: number, radius: number, channelCount = 1): Float32Array {
-  const r = Math.max(0, Math.min(radius, 60));
+  const r = Math.max(0, Math.min(radius, Math.min(w, h, 60)));
   if (r === 0) return src.slice();
   const tmp = new Float32Array(src.length);
   const out = new Float32Array(src.length);
@@ -92,18 +92,18 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
       let cnt = 0;
       for (let x = 0; x < w + r; x++) {
         if (x < w) {
-          sum += src[row + x * channelCount + c];
+          sum += src[row + x + c];
           cnt++;
         }
         if (x >= 2 * r + 1) {
           const k = x - 2 * r - 1;
           if (k >= 0 && k < w) {
-            sum -= src[row + k * channelCount + c];
+            sum -= src[row + k + c];
             cnt--;
           }
         }
         if (x >= r && x < w) {
-          tmp[(y * w + (x - r)) * channelCount + c] = sum / cnt;
+          tmp[(y * w + (x - r)) + c] = sum / cnt;
         }
       }
     }
@@ -115,18 +115,18 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
       let cnt = 0;
       for (let y = 0; y < h + r; y++) {
         if (y < h) {
-          sum += tmp[(y * w + x) * channelCount + c];
+          sum += tmp[(y * w + x) + c];
           cnt++;
         }
         if (y >= 2 * r + 1) {
           const k = y - 2 * r - 1;
           if (k >= 0 && k < h) {
-            sum -= tmp[(k * w + x) * channelCount + c];
+            sum -= tmp[(k * w + x) + c];
             cnt--;
           }
         }
         if (y >= r && y < h) {
-          out[((y - r) * w + x) * channelCount + c] = sum / cnt;
+          out[((y - r) * w + x) + c] = sum / cnt;
         }
       }
     }

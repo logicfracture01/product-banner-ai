@@ -11,104 +11,50 @@
 //     ├─ Stage 2  flood fill from borders, guided by the color model and
 //     │           damped near strong edges → "flood" binary (bg = 1)
 //     │
-//     ├─ Stage 3  invert → contour shave → open → components → RANK
-//     │           (score = size + centrality + non-border) → close → fill holes
-//     │           → "filled" binary (fg = 1) + ranked candidates
+//     ├─ Stage 3  morphological cleanup:
+//     │             · shave by color (remove fg pixels whose color is
+//     │               too close to bg clusters)
+//     │             · opening (erode 1, dilate 1) — kill sub-3px speckles
+//     │               and strip the ~1px anti-aliasing halo left by the
+//     │               sobel-based fill, so the contour lands on the real
+//     │               product edge rather than on its blend fringe.
+//     │             · connected-component labeling, score, rank, keep top
+//     │             · closing (dilate 1, erode 1) — seal pinholes
+//     │             · fill holes
 //     │
-//     ├─ Stage 4  signedDistance(filled) → adaptive alpha ramp + two-sided
-//     │           edge decontamination (unmix bg/product colors) → RGBA out
+//     ├─ Stage 4  signed-distance transform of "filled" → alpha matting
+//     │           (soft edge band = softness px inside the contour; full
+//     │           opacity inside, fully transparent outside)
+//     │           + edge-decontamination (push semi-transparent pixels
+//     │           toward the nearest pure-opaque / pure-transparent sample)
 //     │
-//     └─ Stage 5  confidence = 0.35·separation + 0.30·edge support
-//                           + 0.20·model distance + 0.15·compactness
-//
-// `segment()` (public API) wraps segmentPass with auto-retry: it detects the
-// classic failure modes (whole-frame leak, nothing found, low confidence) and
-// re-runs with adapted tolerance, keeping the best pass.
+//     └─ Stage 5  crop to bbox → Cutout { alpha, box, candidates }
 
-/** A candidate object the detector found, ranked by product-likelihood. */
-export type DetectedObject = {
-  box: { x: number; y: number; w: number; h: number };
-  area: number;
-  /** 0..1 product-likelihood score (size + centrality + border contact). */
-  score: number;
-};
+import { boxBlur3, clamp255, mulberry32, boxDilate8 } from "./pixels";
 
-/** The pipeline's output: source pixels + soft alpha + detection metadata. */
-export type Cutout = {
-  /** RGBA at source size: RGB = decontaminated source color, A = matte. */
+// Re-export the public schema so the rest of the app can import it from here.
+export interface Cutout {
   alpha: Uint8ClampedArray;
   width: number;
   height: number;
-  /** Pixels in the soft (partial-alpha) transition band. */
   softPixels: number;
-  /** Frame edges (1=left,2=top,3=right,4=bottom) the fill reached —
-   *  non-empty means the product may be clipped by the photo border. */
   touchedEdges: Set<number>;
-  /** Bounding box of the PRIMARY object (clutter is excluded from framing). */
   box: { x: number; y: number; w: number; h: number };
-  /** All plausible objects, ranked best-first; box === candidates[0].box. */
   candidates: DetectedObject[];
-  /** 0..1 calibrated confidence that the segmentation found the real product. */
   confidence: number;
-};
-
-export type SegmentOptions = {
-  tolerance?: number;
-  softness?: number;
-  /** Disable the automatic tolerance retry pass. */
-  noRetry?: boolean;
-};
-
-import { boxBlur3, clamp255, mulberry32, boxDilate8 } from "./pixels";
-const boxDilate = boxDilate8;
-
-/** Chebyshev-ish chamfer distance inside the given binary mask. */
-function distanceInside(fg: Uint8Array, w: number, h: number): Float32Array {
-  const INF = 1e9;
-  const d = new Float32Array(fg.length);
-  for (let i = 0; i < fg.length; i++) d[i] = fg[i] ? INF : 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (!fg[i]) continue;
-      let m = d[i];
-      if (x > 0) m = Math.min(m, d[i - 1] + 3);
-      if (y > 0) m = Math.min(m, d[i - w] + 3);
-      if (x > 0 && y > 0) m = Math.min(m, d[i - w - 1] + 4);
-      if (x < w - 1 && y > 0) m = Math.min(m, d[i - w + 1] + 4);
-      d[i] = m;
-    }
-  }
-  for (let y = h - 1; y >= 0; y--) {
-    for (let x = w - 1; x >= 0; x--) {
-      const i = y * w + x;
-      if (!fg[i]) continue;
-      let m = d[i];
-      if (x < w - 1) m = Math.min(m, d[i + 1] + 3);
-      if (y < h - 1) m = Math.min(m, d[i + w] + 3);
-      if (x < w - 1 && y < h - 1) m = Math.min(m, d[i + w + 1] + 4);
-      if (x > 0 && y < h - 1) m = Math.min(m, d[i + w - 1] + 4);
-      d[i] = m;
-    }
-  }
-  for (let i = 0; i < fg.length; i++) d[i] /= 3;
-  return d;
 }
 
-function distanceOutside(bin: Uint8Array, w: number, h: number): Float32Array {
-  const inv = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) inv[i] = bin[i] ? 0 : 1;
-  return distanceInside(inv, w, h);
+export interface DetectedObject {
+  box: { x: number; y: number; w: number; h: number };
+  area: number;
+  score: number;
 }
 
-/** Signed distance: negative inside the mask, positive outside. */
-function signedDistance(fg: Uint8Array, w: number, h: number): Float32Array {
-  const inside = distanceInside(fg, w, h);
-  const outside = distanceOutside(fg, w, h);
-  const out = new Float32Array(fg.length);
-  for (let i = 0; i < fg.length; i++) out[i] = fg[i] ? -inside[i] : outside[i];
-  return out;
-}
+// ---------------------------------------------------------------- constants
+
+const INF = 1e9;
+
+// ---------------------------------------------------------------- morph helpers (generic; used by segment + upscale)
 
 function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
   const tmp = new Uint8Array(src.length);
@@ -116,9 +62,9 @@ function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let v = 1;
-      for (let dx = -r; dx <= r; dx++) {
-        const xx = x + dx;
-        if (xx < 0 || xx >= w || !src[y * w + xx]) {
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h || !src[yy * w + x]) {
           v = 0;
           break;
         }
@@ -129,9 +75,9 @@ function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let v = 1;
-      for (let dy = -r; dy <= r; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= h || !tmp[yy * w + x]) {
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx;
+        if (xx < 0 || xx >= w || !tmp[y * w + xx]) {
           v = 0;
           break;
         }
@@ -142,82 +88,268 @@ function boxErode(src: Uint8Array, w: number, h: number, r: number): Uint8Array 
   return out;
 }
 
-/** Background pixels not reachable from the border become foreground. */
-function fillHoles(fg: Uint8Array, w: number, h: number): Uint8Array {
+function boxDilate(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  const tmp = new Uint8Array(src.length);
+  const out = new Uint8Array(src.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const yy = y + dy;
+        if (yy >= 0 && yy < h && src[yy * w + x]) {
+          v = 1;
+          break;
+        }
+      }
+      tmp[y * w + x] = v;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let dx = -r; dx <= r; dx++) {
+        const xx = x + dx;
+        if (xx >= 0 && xx < w && tmp[y * w + xx]) {
+          v = 1;
+          break;
+        }
+      }
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+
+/** Chebyshev-ish chamfer distance inside the given binary mask. */
+function distanceInside(fg: Uint8Array, w: number, h: number): Float32Array {
+  const d = new Float32Array(fg.length);
+  for (let i = 0; i < fg.length; i++) d[i] = fg[i] ? INF : 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (d[i] < INF) continue;
+      let rx = x;
+      for (; rx < w; rx++) if (!fg[i]) break;
+      let ry = y;
+      for (; ry < h; ry++) if (!fg[ry * w + x]) break;
+      for (let iy = y; iy < ry; iy++) {
+        for (let ix = x; ix < rx; ix++) {
+          d[iy * w + ix] = Math.min(d[iy * w + ix], (iy - y) ** 2 + (ix - x) ** 2);
+        }
+      }
+      x = rx - 1;
+    }
+  }
+
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (d[i] < INF) continue;
+      let rx = x;
+      for (; rx >= 0; rx--) if (!fg[i]) break;
+      let ry = y;
+      for (; ry >= 0; ry--) if (!fg[ry * w + x]) break;
+      for (let iy = y; iy >= ry; iy--) {
+        for (let ix = x; ix >= rx; ix--) {
+          d[iy * w + ix] = Math.min(d[iy * w + ix], (iy - y) ** 2 + (ix - x) ** 2);
+        }
+      }
+      x = rx + 1;
+    }
+  }
+
+  for (let i = 0; i < d.length; i++) d[i] /= 3;
+  return d;
+}
+
+function distanceOutside(fg: Uint8Array, w: number, h: number): Float32Array {
   const outside = new Uint8Array(fg.length);
   const stack = new Int32Array(fg.length);
   let sp = 0;
-  const visit = (x: number, y: number) => {
-    const i = y * w + x;
-    if (!outside[i] && !fg[i]) {
-      outside[i] = 1;
-      stack[sp++] = i;
+  for (let i = 0; i < outside.length; i++) {
+    if (i < w || i % w === 0 || i % w === w - 1 || i >= outside.length - w) {
+      if (!fg[i]) {
+        outside[i] = 1;
+        stack[sp++] = i;
+      }
     }
-  };
-  for (let x = 0; x < w; x++) {
-    visit(x, 0);
-    visit(x, h - 1);
-  }
-  for (let y = 0; y < h; y++) {
-    visit(0, y);
-    visit(w - 1, y);
   }
   while (sp > 0) {
     const i = stack[--sp];
     const x = i % w;
     const y = (i / w) | 0;
-    if (x > 0) visit(x - 1, y);
-    if (x < w - 1) visit(x + 1, y);
-    if (y > 0) visit(x, y - 1);
-    if (y < h - 1) visit(x, y + 1);
+    const nbrs = [
+      x > 0 ? i - 1 : -1,
+      x < w - 1 ? i + 1 : -1,
+      y > 0 ? i - w : -1,
+      y < h - 1 ? i + w : -1,
+    ];
+    for (const j of nbrs) {
+      if (j < 0 || outside[j] || fg[j]) continue;
+      outside[j] = 1;
+      stack[sp++] = j;
+    }
+  }
+  const d = new Float32Array(fg.length);
+  for (let i = 0; i < d.length; i++) d[i] = outside[i] ? 0 : INF;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (d[i] < INF) continue;
+      const rx = Math.min(w, x + 4);
+      const ry = Math.min(h, y + 4);
+      for (let iy = Math.max(0, y - 4); iy < ry; iy++) {
+        for (let ix = Math.max(0, x - 4); ix < rx; ix++) {
+          if (outside[iy * w + ix]) {
+            d[i] = Math.min(d[i], (iy - y) ** 2 + (ix - x) ** 2);
+          }
+        }
+      }
+    }
+  }
+  for (let i = 0; i < d.length; i++) d[i] /= 3;
+  return d;
+}
+
+/** Signed-distance field: negative = inside fg, positive = outside. */
+function signedDistance(fg: Uint8Array, w: number, h: number): Float32Array {
+  const inside = distanceInside(fg, w, h);
+  const outside = distanceOutside(fg, w, h);
+  const out = new Float32Array(fg.length);
+  for (let i = 0; i < fg.length; i++) out[i] = fg[i] ? -inside[i] : outside[i];
+  return out;
+}
+
+/** Fill interior holes using boundary-connected BFS. */
+function fillHoles(fg: Uint8Array, w: number, h: number): Uint8Array {
+  const outside = new Uint8Array(fg.length);
+  const stack = new Int32Array(fg.length);
+  let sp = 0;
+  for (let i = 0; i < outside.length; i++) {
+    if (i < w || i % w === 0 || i % w === w - 1 || i >= outside.length - w) {
+      if (!fg[i]) {
+        outside[i] = 1;
+        stack[sp++] = i;
+      }
+    }
+  }
+  while (sp > 0) {
+    const i = stack[--sp];
+    const x = i % w;
+    const y = (i / w) | 0;
+    const nbrs = [
+      x > 0 ? i - 1 : -1,
+      x < w - 1 ? i + 1 : -1,
+      y > 0 ? i - w : -1,
+      y < h - 1 ? i + w : -1,
+    ];
+    for (const j of nbrs) {
+      if (j < 0 || outside[j] || fg[j]) continue;
+      outside[j] = 1;
+      stack[sp++] = j;
+    }
   }
   const out = new Uint8Array(fg.length);
   for (let i = 0; i < fg.length; i++) out[i] = fg[i] || !outside[i] ? 1 : 0;
   return out;
 }
 
-/** 4-connected labeled components; returns labels + per-label pixel counts. */
-function components(
-  bin: Uint8Array,
-  w: number,
-  h: number,
-): { labels: Int32Array; sizes: number[] } {
-  const labels = new Int32Array(bin.length).fill(-1);
-  const sizes: number[] = [];
-  const stack = new Int32Array(bin.length);
+/** 4-connected component labeling. */
+function components(fg: Uint8Array, w: number, h: number): { labels: Int32Array; sizes: Uint32Array } {
+  const labels = new Int32Array(fg.length).fill(-1);
+  const sizes: number[] = [0];
+  const equiv: number[] = [0];
+  const stack = new Int32Array(fg.length);
   let next = 0;
-  for (let s = 0; s < bin.length; s++) {
-    if (!bin[s] || labels[s] !== -1) continue;
-    let sp = 0;
-    stack[sp++] = s;
-    labels[s] = next;
-    let size = 0;
-    while (sp > 0) {
-      const i = stack[--sp];
-      size++;
-      const x = i % w;
-      const y = (i / w) | 0;
-      if (x > 0 && bin[i - 1] && labels[i - 1] === -1) {
-        labels[i - 1] = next;
-        stack[sp++] = i - 1;
+  let sp = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!fg[i] || labels[i] >= 0) continue;
+      next++;
+      if (next >= labels.length) {
+        const nn = Math.max(64, next * 2);
+        labels.fill(-1, next, nn);
       }
-      if (x < w - 1 && bin[i + 1] && labels[i + 1] === -1) {
-        labels[i + 1] = next;
-        stack[sp++] = i + 1;
-      }
-      if (y > 0 && bin[i - w] && labels[i - w] === -1) {
-        labels[i - w] = next;
-        stack[sp++] = i - w;
-      }
-      if (y < h - 1 && bin[i + w] && labels[i + w] === -1) {
-        labels[i + w] = next;
-        stack[sp++] = i + w;
+      labels[i] = next - 1;
+      sizes.push(1);
+      equiv.push(next - 1);
+      stack[sp++] = i;
+      while (sp > 0) {
+        const j = stack[--sp];
+        const jx = j % w;
+        const jy = (j / w) | 0;
+        const nbrs = [
+          jx > 0 && fg[j - 1] && labels[j - 1] < 0 ? j - 1 : -1,
+          jx < w - 1 && fg[j + 1] && labels[j + 1] < 0 ? j + 1 : -1,
+          jy > 0 && fg[j - w] && labels[j - w] < 0 ? j - w : -1,
+          jy < h - 1 && fg[j + w] && labels[j + w] < 0 ? j + w : -1,
+        ];
+        for (const n of nbrs) {
+          if (n < 0) continue;
+          if (labels[n] >= 0) {
+            const r = labels[n];
+            if (r !== next - 1 && equiv[r] !== next - 1) {
+              equiv[r] = next - 1;
+            }
+            continue;
+          }
+          next++;
+          if (next >= labels.length) {
+            const nn = Math.max(64, next * 2);
+            labels.fill(-1, next, nn);
+          }
+          labels[n] = next - 1;
+          sizes.push(1);
+          equiv.push(next - 1);
+          stack[sp++] = n;
+        }
       }
     }
-    sizes.push(size);
-    next++;
   }
-  return { labels, sizes };
+  for (let i = 0; i < equiv.length; i++) {
+    if (equiv[i] !== i) {
+      let t = i;
+      while (equiv[t] !== t) t = equiv[t];
+      equiv[i] = equiv[t];
+    }
+  }
+  const final = new Int32Array(labels.length).fill(-1);
+  const finalSizes = new Uint32Array(1);
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] < 0) continue;
+    let root = labels[i];
+    while (equiv[root] !== root) root = equiv[root];
+    if (final[root] < 0) final[root] = finalSizes.length - 1;
+    final[i] = final[root];
+    finalSizes[final[root]]++;
+  }
+  return { labels: final, sizes: finalSizes };
+}
+
+// ---------------------------------------------------------------- color helpers
+
+function unpackPacked(s: number): [number, number, number] {
+  return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
+}
+
+function bgDistance(
+  r: number,
+  g: number,
+  b: number,
+  centers: Array<[number, number, number]>,
+  scale: [number, number, number],
+): number {
+  let best = INF;
+  const ar: [number, number, number] = [r, g, b];
+  for (const [cr, cg, cb] of centers) {
+    const dr = ar[0] - cr;
+    const dg = ar[1] - cg;
+    const db = ar[2] - cb;
+    const d = Math.sqrt(dr * dr + dg * dg + db * db);
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------- main pass
@@ -232,6 +364,10 @@ function segmentPass(
   const n = width * height;
 
   // ---- Stage 1: edge map + background color model -------------------------
+  // Background model is built ONLY from a border ring, not the full image.
+  // This keeps the bg clusters anchored to the actual backdrop (which usually
+  // surrounds the product at the frame edges) and avoids the product itself
+  // contaminating the color model.
   const edge = sobel(rgba, width, height);
   const EDGE_STRONG = 60;
 
@@ -244,20 +380,25 @@ function segmentPass(
     const p = (y * width + x) * 4;
     samples[sc++] = ((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]) >>> 0;
   };
+  // top + bottom border strips
   for (let x = 0; x < width; x += 2) {
     for (let t = 0; t < ring; t += 2) {
       addSample(x, t);
       addSample(x, height - 1 - t);
     }
   }
+  // left + right border strips (excluding the already-sampled corners)
   for (let y = ring; y < height - ring; y += 2) {
     for (let t = 0; t < ring; t += 2) {
       addSample(t, y);
       addSample(width - 1 - t, y);
     }
   }
-  const bgCenters = kmeansSep(sc, samples, 4);
+  const bgCenters = kmeans(sc, samples);
 
+  // Per-channel sigma for the bg clusters → adaptive color distance scale.
+  // Far-apart bg clusters (e.g. a two-tone backdrop) widen the tolerance,
+  // tight clusters tighten it — so one global tolerance works on more scenes.
   const scale: [number, number, number] = [12, 12, 12];
   {
     let sr = 0;
@@ -284,23 +425,25 @@ function segmentPass(
     scale[2] = Math.max(8, Math.sqrt(vb / bgCenters.length) * 0.75 + 6);
   }
 
-  // ---- Stage 2: model-guided, edge-stopped flood from the borders ---------
+  // ---- Stage 2: flood fill from outside, guided by bg color model ---------
+  // Start from the frame border and walk inward while pixels are plausibly bg
+  // (low sobel + close to one of the bg clusters). This gives a much cleaner
+  // "definitely-background" seed than a pure-edge threshold.
   const flood = new Uint8Array(n);
   const stack = new Int32Array(n);
   let sp = 0;
-  const seeds = new Set<number>();
-  const step = Math.max(2, Math.round(Math.min(width, height) / 24));
-  for (let x = 0; x < width; x += step) {
-    seeds.add(x);
-    seeds.add((height - 1) * width + x);
+
+  // Seed from border pixels that aren't strong edges.
+  for (let x = 0; x < width; x++) {
+    for (const y of [0, height - 1]) {
+      if (edge[y * width + x] > EDGE_STRONG) continue;
+      stack[sp++] = y * width + x;
+    }
   }
-  for (let y = 0; y < height; y += step) {
-    seeds.add(y * width);
-    seeds.add(y * width + width - 1);
-  }
-  for (const s of seeds) {
-    if (!flood[s]) {
-      stack[sp++] = s;
+  for (let y = 1; y < height - 1; y++) {
+    for (const x of [0, width - 1]) {
+      if (edge[y * width + x] > EDGE_STRONG) continue;
+      stack[sp++] = y * width + x;
     }
   }
 
@@ -325,6 +468,7 @@ function segmentPass(
       if (edge[j] > EDGE_STRONG) continue;
       const q = j * 4;
       const dist = bgDistance(rgba[q], rgba[q + 1], rgba[q + 2], bgCenters, scale);
+
       const edgeDamp = 1 - Math.min(1, edge[j] / EDGE_STRONG) * 0.65;
       if (dist <= cutoff * edgeDamp) {
         stack[sp++] = j;
@@ -333,10 +477,14 @@ function segmentPass(
     if (sp >= n) break;
   }
 
-  // ---- Stage 3: cleanup -------------------------------------------------
+  // ---- Stage 3: cleanup ---------------------------------------------------
+  // fg0 = 1 where we have NOT yet proven it's background.
   const fg0 = new Uint8Array(n);
   for (let i = 0; i < n; i++) fg0[i] = flood[i] ? 0 : 1;
 
+  // Shave: fg pixels that touch the bg and whose color is too close to bg
+  // clusters are probably fringed / near-transparent and shouldn't count as
+  // product. This is the first line of defense against blend halos.
   const shaveCutoff = cutoff * 0.5;
   const shaved = new Uint8Array(fg0);
   for (let y = 0; y < height; y++) {
@@ -358,11 +506,12 @@ function segmentPass(
 
   // Opening (erode 1 + dilate 1): strips the remaining 1px blend halo and
   // kills sub-3px speckles in one move.
-  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
+  const opened = boxErode(boxDilate(shaved, width, height, 1), width, height, 1);
   const { labels, sizes } = components(opened, width, height);
   const minSize = Math.max(24, n * 0.004);
   const compCount = sizes.length;
 
+  // Aggregate per-component geometry + statistics.
   const compArea = new Float64Array(compCount);
   const compSumX = new Float64Array(compCount);
   const compSumY = new Float64Array(compCount);
@@ -387,6 +536,12 @@ function segmentPass(
     }
   }
 
+  // Score candidates by a blend of:
+  //   · size (bigger is better, but once >85% of frame we assume full-bleed
+  //     and penalize, since a true product cutout is usually a smaller subject)
+  //   · centrality (product tends to be near frame center)
+  //   · border contact (a component touching the frame edge is probably a
+  //     crop artifact / backdrop bleed, not the product)
   const maxDist = Math.hypot(width, height) / 2;
   const scoreOf = (c: number): number => {
     const af = compArea[c] / n;
@@ -418,6 +573,7 @@ function segmentPass(
   }));
   const primary = ranked.length > 0 ? ranked[0] : -1;
 
+  // Rebuild the kept mask from the labeled components.
   const fg = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const l = labels[i];
@@ -426,189 +582,170 @@ function segmentPass(
 
   // Closing (dilate 1 + erode 1): seals pinholes and gaps without growing
   // the contour (net-neutral on straight edges — critical for IoU accuracy).
-  const closedPair = boxErode(boxDilate(fg, width, height, 1), width, height, 1);
+  const closedPair = boxDilate(boxErode(fg, width, height, 1), width, height, 1);
   const filled = fillHoles(closedPair, width, height);
 
-  // ---- Stage 4: signed-distance alpha matting + decontamination ----------
+  // ---- Stage 4: signed-distance alpha matting + decontamination ------------
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;
   const sd = signedDistance(filled, width, height);
 
-  let br = 0;
-  let bg2 = 0;
-  let bb = 0;
-  let bcount = 0;
+  // Soften the edge band according to the `softness` parameter.
+  const softRange = 1 + softness;
+  const softDenom = softRange * softRange;
   for (let i = 0; i < n; i++) {
-    if (!filled[i]) {
-      const p = i * 4;
-      br += rgba[p];
-      bg2 += rgba[p + 1];
-      bb += rgba[p + 2];
-      bcount++;
-    }
-  }
-  bcount = Math.max(1, bcount);
-  const bgMean = [br / bcount, bg2 / bcount, bb / bcount];
-
-  const sdGradX = new Float32Array(n);
-  const sdGradY = new Float32Array(n);
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const i = y * width + x;
-      sdGradX[i] = sd[i + 1] - sd[i - 1];
-      sdGradY[i] = sd[i + width] - sd[i - width];
-    }
-  }
-
-  for (let i = 0; i < n; i++) {
-    const d = sd[i];
-    const ec = Math.min(1, edge[i] / 255);
-    const band = 1 + (1 - ec) * 1.5;
-    let a: number;
-    if (d <= -band) {
-      a = 255;
-    } else if (d >= band) {
-      a = 0;
+    const p = i * 4;
+    const s = sd[i];
+    if (s <= -0.5) {
+      alpha[p + 3] = 255;
+    } else if (s >= softRange) {
+      alpha[p + 3] = 0;
     } else {
-      const t = (d + band) / (2 * band);
-      a = Math.round(255 * (1 - t));
-      a = clamp255(a + (filled[i] ? ec * 20 : 0));
-      softPixels++;
+      const t = s / softRange;
+      alpha[p + 3] = clamp255(Math.round((1 - t * t) * 255));
+      if (alpha[p + 3] > 0 && alpha[p + 3] < 255) softPixels++;
     }
-    const p = i * 4;
-
-    let or_ = rgba[p];
-    let og = rgba[p + 1];
-    let ob = rgba[p + 2];
-    if (a > 0 && a < 255) {
-      const x = i % width;
-      const y = (i / width) | 0;
-      const gl = Math.hypot(sdGradX[i], sdGradY[i]) || 1;
-      const stepIn = 2;
-      const ix = Math.round(Math.max(0, Math.min(width - 1, x + (sdGradX[i] / gl) * -stepIn)));
-      const iy = Math.round(Math.max(0, Math.min(height - 1, y + (sdGradY[i] / gl) * -stepIn)));
-      const ip = (iy * width + ix) * 4;
-      const pr = rgba[ip];
-      const pg = rgba[ip + 1];
-      const pb = rgba[ip + 2];
-      const mix = a / 255;
-      const inv = 1 / Math.max(0.25, mix);
-      const estR = bgMean[0] + (or_ - bgMean[0]) * inv;
-      const estG = bgMean[1] + (og - bgMean[1]) * inv;
-      const estB = bgMean[2] + (ob - bgMean[2]) * inv;
-      const wIn = 0.45;
-      or_ = clamp255((estR * (1 - wIn) + pr * wIn) * 0.35 + or_ * 0.65);
-      og = clamp255((estG * (1 - wIn) + pg * wIn) * 0.35 + og * 0.65);
-      ob = clamp255((estB * (1 - wIn) + pb * wIn) * 0.35 + ob * 0.65);
-    }
-
-    alpha[p] = or_;
-    alpha[p + 1] = og;
-    alpha[p + 2] = ob;
-    alpha[p + 3] = a;
   }
 
-  // ---- confidence ---------------------------------------------------------
-  let sepSum = 0;
-  let sepCount = 0;
-  for (let i = 0; i < n; i += 7) {
-    if (!filled[i]) continue;
-    const p = i * 4;
-    let best = Infinity;
-    for (const [cr, cg, cb] of bgCenters) {
-      const dr = rgba[p] - cr;
-      const dg = rgba[p + 1] - cg;
-      const db = rgba[p + 2] - cb;
-      const d = Math.sqrt(dr * dr + dg * dg + db * db);
-      if (d < best) best = d;
-    }
-    sepSum += best;
-    sepCount++;
-  }
-  const rawSep = sepCount > 0 ? Math.min(1, sepSum / sepCount / 120) : 0;
-
-  let sepSum2 = 0;
-  for (let i = 0; i < n; i += 7) {
-    if (!filled[i]) continue;
-    const p = i * 4;
-    sepSum2 += bgDistance(rgba[p], rgba[p + 1], rgba[p + 2], bgCenters, scale);
-  }
-  const separation = sepCount > 0 ? Math.min(1, (sepSum2 / sepCount) / 4) : 0;
-
-  let contourHits = 0;
-  let contourTotal = 0;
-  for (let i = 0; i < n; i++) {
-    if (filled[i]) continue;
-    const x = i % width;
-    const y = (i / width) | 0;
-    let adjacent = false;
-    if (x > 0 && filled[i - 1]) adjacent = true;
-    else if (x < width - 1 && filled[i + 1]) adjacent = true;
-    else if (y > 0 && filled[i - width]) adjacent = true;
-    else if (y < height - 1 && filled[i + width]) adjacent = true;
-    if (!adjacent) continue;
-    contourTotal++;
-    if (edge[i] > 24) contourHits++;
-  }
-  const edgeSupport = contourTotal > 0 ? contourHits / contourTotal : 0;
-
-  let area = 0;
-  for (let i = 0; i < n; i++) if (filled[i]) area++;
-  const compactness = area > 0 ? Math.min(1, (4 * Math.PI * area) / (contourTotal * contourTotal + 1)) : 0;
-
-  const confidence = Math.max(
-    0,
-    Math.min(
-      1,
-      0.35 * rawSep +
-        0.3 * edgeSupport +
-        0.2 * separation +
-        0.15 * Math.min(1, compactness),
-    ),
-  );
-
-  // ---- bbox: primary object only ------------------------------------------
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  if (primary >= 0) {
-    minX = compMinX[primary];
-    minY = compMinY[primary];
-    maxX = compMaxX[primary];
-    maxY = compMaxY[primary];
-  } else {
-    for (let i = 0; i < n; i++) {
-      if (alpha[i * 4 + 3] > 8) {
-        const x = i % width;
-        const y = (i / width) | 0;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
+  // Edge-decontamination: sample the pure-opaque and pure-transparent pixels,
+  // then pull semi-transparent pixels toward whichever side they're more
+  // similar to. This removes the washed-out fringe a naive alpha ramp leaves
+  // on hair / glass / fine product edges.
+  {
+    const fgSample = new Uint32Array(64);
+    const bgSample = new Uint32Array(64);
+    let fgCount = 0;
+    let bgCount = 0;
+    for (let iter = 0; iter < 3; iter++) {
+      for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        const a = alpha[p + 3];
+        if (a >= 250 && a <= 255) {
+          const packed = ((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]) >>> 0;
+          if (fgCount < fgSample.length) fgSample[fgCount++] = packed;
+        } else if (a >= 0 && a <= 5) {
+          const packed = ((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]) >>> 0;
+          if (bgCount < bgSample.length) bgSample[bgCount++] = packed;
+        }
       }
     }
-  }
-  if (maxX < 0) {
-    minX = 0;
-    minY = 0;
-    maxX = width - 1;
-    maxY = height - 1;
+    const fgL = fgSample.slice(0, fgCount);
+    const bgL = bgSample.slice(0, bgCount);
+
+    for (let i = 0; i < n; i++) {
+      const p = i * 4;
+      const a = alpha[p + 3];
+      if (a >= 250 || a <= 5) continue;
+      const packed = ((rgba[p] << 16) | (rgba[p + 1] << 8) | rgba[p + 2]) >>> 0;
+      const r = (packed >> 16) & 255;
+      const g = (packed >> 8) & 255;
+      const b = packed & 255;
+
+      let fgBest = INF;
+      for (let k = 0; k < fgL.length; k++) {
+        const s = fgL[k];
+        const dr = r - ((s >> 16) & 255);
+        const dg = g - ((s >> 8) & 255);
+        const db = b - (s & 255);
+        const d = dr * dr + dg * dg + db * db;
+        if (d < fgBest) fgBest = d;
+      }
+      const fgDist = Math.sqrt(fgBest);
+
+      let bgBest = INF;
+      for (let k = 0; k < bgL.length; k++) {
+        const s = bgL[k];
+        const dr = r - ((s >> 16) & 255);
+        const dg = g - ((s >> 8) & 255);
+        const db = b - (s & 255);
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bgBest) bgBest = d;
+      }
+      const bgDist = Math.sqrt(bgBest);
+
+      const total = fgDist + bgDist;
+      const fgFrac = total > 0 ? fgDist / total : 0.5;
+      const targetA = Math.round((1 - fgFrac) * 255);
+
+      const blended = Math.round(a * 0.6 + targetA * 0.4);
+      alpha[p + 3] = clamp255(blended);
+      if (alpha[p + 3] > 0 && alpha[p + 3] < 255) softPixels++;
+    }
   }
 
+  // ---- Stage 5: crop + output ---------------------------------------------
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = alpha[(y * width + x) * 4 + 3];
+      if (a === 0) continue;
+      const i4 = (y * width + x) * 4;
+      if (alpha[i4] === 0 && alpha[i4 + 1] === 0 && alpha[i4 + 2] === 0) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (minX > maxX || minY > maxY) {
+    return {
+      alpha: new Uint8ClampedArray(0),
+      width: 0,
+      height: 0,
+      softPixels: 0,
+      touchedEdges,
+      box: { x: 0, y: 0, w: 0, h: 0 },
+      candidates,
+      confidence: 0,
+    };
+  }
+  const cw = maxX - minX + 1;
+  const ch = maxY - minY + 1;
+  const out = new Uint8ClampedArray(cw * ch * 4);
+  for (let y = 0; y < ch; y++) {
+    const sy = y + minY;
+    for (let x = 0; x < cw; x++) {
+      const sx = x + minX;
+      const si = (sy * width + sx) * 4;
+      const di = (y * cw + x) * 4;
+      out[di] = alpha[si];
+      out[di + 1] = alpha[si + 1];
+      out[di + 2] = alpha[si + 2];
+      out[di + 3] = alpha[si + 3];
+    }
+  }
+
+  const primaryBox = primary >= 0 ? candidates[primary] : null;
+  const box = primaryBox ? primaryBox.box : { x: minX, y: minY, w: cw, h: ch };
+
+  let fgCount = 0;
+  for (let c = 0; c < compCount; c++) {
+    if (keep[c]) fgCount += sizes[c];
+  }
+  const confidence = compCount > 0 ? Math.min(1, (fgCount / n) * 5 + (primary >= 0 ? 0.5 : 0)) : 0;
+
   return {
-    alpha,
-    width,
-    height,
+    alpha: out,
+    width: cw,
+    height: ch,
     softPixels,
     touchedEdges,
-    box: { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 },
+    box,
     candidates,
     confidence,
   };
 }
 
 // ---------------------------------------------------------------- public API
+
+export interface SegmentOptions {
+  tolerance?: number;
+  softness?: number;
+  noRetry?: boolean;
+}
 
 export function segment(
   rgba: Uint8ClampedArray,
@@ -620,70 +757,25 @@ export function segment(
   const softness = opts.softness ?? 2;
 
   const first = segmentPass(rgba, width, height, tolerance, softness);
-  if (opts.noRetry) return first;
-
-  const areaFrac =
-    (first.box.w * first.box.h) / (width * height);
-
-  if (first.box.w > width * 0.97 && first.box.h > height * 0.97) {
-    const tighter = segmentPass(
-      rgba,
-      width,
-      height,
-      Math.max(10, tolerance * 0.55),
-      softness,
-    );
-    const tighterFrac = (tighter.box.w * tighter.box.h) / (width * height);
-    if (tighterFrac < 0.9 && tighter.confidence >= first.confidence * 0.8) return tighter;
-    return first;
+  if (!opts.noRetry && first.softPixels > first.width * first.height * 0.18) {
+    const retry = segmentPass(rgba, width, height, Math.max(8, tolerance - 6), Math.max(1, softness - 1));
+    return {
+      ...retry,
+      candidates: first.candidates,
+      confidence: Math.max(retry.confidence, first.confidence * 0.7),
+    };
   }
-
-  if (areaFrac < 0.005) {
-    const looser = segmentPass(
-      rgba,
-      width,
-      height,
-      Math.min(60, tolerance * 1.8),
-      softness,
-    );
-    const looserFrac = (looser.box.w * looser.box.h) / (width * height);
-    if (looserFrac > areaFrac * 2 && looserFrac < 0.92) return looser;
-    return first;
-  }
-
-  if (first.confidence < 0.35) {
-    const tighter = segmentPass(
-      rgba,
-      width,
-      height,
-      Math.max(10, tolerance * 0.7),
-      softness,
-    );
-    const looser = segmentPass(
-      rgba,
-      width,
-      height,
-      Math.min(60, tolerance * 1.4),
-      softness,
-    );
-    const best = [first, tighter, looser].reduce((a, b) =>
-      b.confidence > a.confidence ? b : a,
-    );
-    return best;
-  }
-
   return first;
 }
 
-// ---------------------------------------------------------------- internal: kmeans, bgDistance, sobel
+// ---------------------------------------------------------------- internal: kmeans, sobel
 
-function kmeansSep(
+function kmeans(
   count: number,
   samples: Uint32Array,
-  k: number,
-  iters = 10,
 ): Array<[number, number, number]> {
   if (count === 0) return [[255, 255, 255]];
+  const k = 4;
   if (count <= k) {
     const out: Array<[number, number, number]> = [];
     for (let i = 0; i < count; i++) out.push(unpackPacked(samples[i]));
@@ -698,22 +790,24 @@ function kmeansSep(
   }
   const sorted = keyed.slice().sort();
   const unpack = unpackPacked;
+
   const centers: Array<[number, number, number]> = [];
   for (let c = 0; c < k; c++) {
     const idx = Math.min(
       sorted.length - 1,
       Math.floor(((c + 0.5) / k) * sorted.length),
     );
-    centers.push(unpack(sorted[idx]));
+    centers.push(unpack(sorted[idx] & 0x3fffff));
   }
 
   const assign = new Uint8Array(count);
+  const iters = 10;
   for (let iter = 0; iter < iters; iter++) {
     let moved = false;
     for (let i = 0; i < count; i++) {
       const [r, g, b] = unpack(samples[i]);
       let bi = 0;
-      let bd = Infinity;
+      let bd = INF;
       for (let c = 0; c < centers.length; c++) {
         const [cr, cg, cb] = centers[c];
         const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
@@ -735,62 +829,58 @@ function kmeansSep(
       a[0] += r;
       a[1] += g;
       a[2] += b;
-      a[3]++;
+      a[3] += 1;
     }
     for (let c = 0; c < centers.length; c++) {
-      if (sums[c][3] > 0) {
-        centers[c] = [sums[c][0] / sums[c][3], sums[c][1] / sums[c][3], sums[c][2] / sums[c][3]];
-      }
+      const s = sums[c];
+      if (s[3] === 0) continue;
+      centers[c] = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
     }
   }
+
   return centers;
 }
 
-function unpackPacked(s: number): [number, number, number] {
-  return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
-}
-
-function bgDistance(
-  r: number,
-  g: number,
-  b: number,
-  centers: Array<[number, number, number]>,
-  scale: [number, number, number],
-): number {
-  let best = Infinity;
-  for (const [cr, cg, cb] of centers) {
-    const dr = (r - cr) / scale[0];
-    const dg = (g - cg) / scale[1];
-    const db = (b - cb) / scale[2];
-    const d = Math.sqrt(dr * dr + dg * dg + db * db);
-    if (d < best) best = d;
-  }
-  return best;
-}
-
 function sobel(rgba: Uint8ClampedArray, w: number, h: number): Float32Array {
-  const n = w * h;
-  const lum = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const p = i * 4;
-    lum[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
-  }
-  const edge = new Float32Array(n);
+  const out = new Float32Array(w * h);
+  const gx = [
+    [-1, 0, 1],
+    [-2, 0, 2],
+    [-1, 0, 1],
+  ];
+  const gy = [
+    [-1, -2, -1],
+    [0, 0, 0],
+    [1, 2, 1],
+  ];
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
-      const i = y * w + x;
-      const tl = lum[i - w - 1];
-      const t = lum[i - w];
-      const tr = lum[i - w + 1];
-      const l = lum[i - 1];
-      const r = lum[i + 1];
-      const bl = lum[i + w - 1];
-      const b = lum[i + w];
-      const br = lum[i + w + 1];
-      const gx = tl + 2 * l + bl - (tr + 2 * r + br);
-      const gy = tl + 2 * t + tr - (bl + 2 * b + br);
-      edge[i] = Math.min(255, Math.hypot(gx, gy));
+      let rx = 0;
+      let gx_ = 0;
+      let bx = 0;
+      let rgy = 0;
+      let ggy = 0;
+      let bgy = 0;
+      for (let ky = -1; ky <= 1; ky++) {
+        for (let kx = -1; kx <= 1; kx++) {
+          const p = ((y + ky) * w + (x + kx)) * 4;
+          const r = rgba[p];
+          const g = rgba[p + 1];
+          const b = rgba[p + 2];
+          rx += r * gx[ky + 1][kx + 1];
+          gx_ += g * gx[ky + 1][kx + 1];
+          bx += b * gx[ky + 1][kx + 1];
+          rgy += r * gy[ky + 1][kx + 1];
+          ggy += g * gy[ky + 1][kx + 1];
+          bgy += b * gy[ky + 1][kx + 1];
+        }
+      }
+      const mag = Math.sqrt(
+        (rx * rx + gx_ * gx_ + bx * bx) / 3 +
+        (rgy * rgy + ggy * ggy + bgy * bgy) / 3,
+      );
+      out[y * w + x] = mag;
     }
   }
-  return edge;
+  return out;
 }

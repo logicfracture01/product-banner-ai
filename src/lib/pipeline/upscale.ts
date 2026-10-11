@@ -29,7 +29,41 @@
 // Shared primitives (blur, luminance, smoothstep, clamping) come from
 // ./pixels so every engine in the pipeline agrees on the exact same math.
 
-import { boxBlur3, clamp255, luminance, smoothstep } from "./pixels";
+import { clamp255, luminance, smoothstep } from "./pixels";
+function boxBlur3(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+  const r = Math.max(0, Math.min(radius, Math.min(w, h, 60)));
+  if (r === 0) return src.slice();
+  const tmp = new Float32Array(src.length);
+  const out = new Float32Array(src.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w + r; x++) {
+      if (x < w) {
+        let sum = src[row + x];
+        let cnt = 1;
+        for (let k = 1; k <= r; k++) {
+          if (x - k >= 0) { sum -= src[row + x - k]; cnt--; }
+          if (x + k < w) { sum += src[row + x + k]; cnt++; }
+        }
+        tmp[row + x] = sum / cnt;
+      }
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h + r; y++) {
+      if (y < h) {
+        let sum = tmp[y * w + x];
+        let cnt = 1;
+        for (let k = 1; k <= r; k++) {
+          if (y - k >= 0) { sum -= tmp[(y - k) * w + x]; cnt--; }
+          if (y + k < h) { sum += tmp[(y + k) * w + x]; cnt++; }
+        }
+        out[(y >= r ? y - r : 0) * w + x] = sum / cnt;
+      }
+    }
+  }
+  return out;
+}
 
 export type UpscaleOptions = {
   /** Integer scale factor (2 or 3). */
@@ -212,7 +246,7 @@ export function upscaleImage(
   for (let i = 0; i < n; i++) {
     const l = L[i];
     // halo suppressor: smoothstep fade of sharpening near strong edges
-    const sup = smoothstep(1 - Math.min(1, edgeSoft[i] / 60));
+    const sup = smoothstep(0, 1, 1 - Math.min(1, edgeSoft[i] / 60));
 
     let lNew = l + (l - lo[i]) * (sharpening * sup * 1.6);
 
