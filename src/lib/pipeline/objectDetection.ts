@@ -25,6 +25,7 @@ export interface DetectResult {
   bbox: { xMin: number; yMin: number; xMax: number; yMax: number };
   confidence: number;
   label: string;
+  /** @deprecated kept only for backward compat; MediaPipe Category has no categoryIndex */
   categoryIndex: number;
 }
 
@@ -45,7 +46,7 @@ export async function detectObject(
         : { xMin: 0, yMin: 0, xMax: 0, yMax: 0 },
       confidence: categories ? Math.max(...categories.map((c) => c.score ?? 0)) : 0,
       label: bestCategory ? (bestCategory.categoryName ?? "") : "",
-      categoryIndex: bestCategory && bestCategory.categoryIndex !== undefined ? bestCategory.categoryIndex : -1,
+      categoryIndex: -1,
     };
   }).filter((r) => r.confidence > 0.35);
 }

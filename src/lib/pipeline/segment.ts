@@ -256,7 +256,7 @@ function segmentPass(
       addSample(width - 1 - t, y);
     }
   }
-  const bgCenters = kmeans(sc, samples, 4);
+  const bgCenters = kmeansSep(sc, samples, 4);
 
   const scale: [number, number, number] = [12, 12, 12];
   {
@@ -610,8 +610,6 @@ function segmentPass(
 
 // ---------------------------------------------------------------- public API
 
-/**\n * Segment with auto-retry.
- */
 export function segment(
   rgba: Uint8ClampedArray,
   width: number,
@@ -621,7 +619,7 @@ export function segment(
   const tolerance = opts.tolerance ?? 26;
   const softness = opts.softness ?? 2;
 
-  const first = segmentPassSep(rgba, width, height, tolerance, softness);
+  const first = segmentPass(rgba, width, height, tolerance, softness);
   if (opts.noRetry) return first;
 
   const areaFrac =
@@ -679,7 +677,7 @@ export function segment(
 
 // ---------------------------------------------------------------- internal: kmeans, bgDistance, sobel
 
-function kmeans(
+function kmeansSep(
   count: number,
   samples: Uint32Array,
   k: number,
@@ -752,7 +750,7 @@ function unpackPacked(s: number): [number, number, number] {
   return [(s >> 16) & 255, (s >> 8) & 255, s & 255];
 }
 
-function bgDistanceSep(
+function bgDistance(
   r: number,
   g: number,
   b: number,

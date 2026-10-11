@@ -74,8 +74,11 @@ export function distanceOutside(bin: Uint8Array, w: number, h: number): Float32A
   return distanceInside(inv, w, h);
 }
 
-/** Three-pass separable box blur of `src` in-place (clamped radius). */
-export function boxBlur3(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+/** Three-pass separable box blur operating on the luminance of `src`.
+ *  Used by upscale's chroma stage to smooth Cb/Cr planes (which are stored as
+ *  one-channel Float32Arrays here).
+ */
+export function boxBlur3(src: Float32Array, w: number, h: number, radius: number, channelCount = 1): Float32Array {
   const r = Math.max(0, Math.min(radius, 60));
   if (r === 0) return src.slice();
   const tmp = new Float32Array(src.length);
@@ -83,44 +86,48 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
 
   // horizontal
   for (let y = 0; y < h; y++) {
-    const row = y * w;
-    let sum = 0;
-    let cnt = 0;
-    for (let x = 0; x < w + r; x++) {
-      if (x < w) {
-        sum += src[row + x];
-        cnt++;
-      }
-      if (x >= 2 * r + 1) {
-        const k = x - 2 * r - 1;
-        if (k >= 0 && k < w) {
-          sum -= src[row + k];
-          cnt--;
+    const row = y * w * channelCount;
+    for (let c = 0; c < channelCount; c++) {
+      let sum = 0;
+      let cnt = 0;
+      for (let x = 0; x < w + r; x++) {
+        if (x < w) {
+          sum += src[row + x * channelCount + c];
+          cnt++;
         }
-      }
-      if (x >= r && x < w) {
-        tmp[row + (x - r)] = sum / cnt;
+        if (x >= 2 * r + 1) {
+          const k = x - 2 * r - 1;
+          if (k >= 0 && k < w) {
+            sum -= src[row + k * channelCount + c];
+            cnt--;
+          }
+        }
+        if (x >= r && x < w) {
+          tmp[(y * w + (x - r)) * channelCount + c] = sum / cnt;
+        }
       }
     }
   }
   // vertical
   for (let x = 0; x < w; x++) {
-    let sum = 0;
-    let cnt = 0;
-    for (let y = 0; y < h + r; y++) {
-      if (y < h) {
-        sum += tmp[y * w + x];
-        cnt++;
-      }
-      if (y >= 2 * r + 1) {
-        const k = y - 2 * r - 1;
-        if (k >= 0 && k < h) {
-          sum -= tmp[k * w + x];
-          cnt--;
+    for (let c = 0; c < channelCount; c++) {
+      let sum = 0;
+      let cnt = 0;
+      for (let y = 0; y < h + r; y++) {
+        if (y < h) {
+          sum += tmp[(y * w + x) * channelCount + c];
+          cnt++;
         }
-      }
-      if (y >= r && y < h) {
-        out[(y - r) * w + x] = sum / cnt;
+        if (y >= 2 * r + 1) {
+          const k = y - 2 * r - 1;
+          if (k >= 0 && k < h) {
+            sum -= tmp[(k * w + x) * channelCount + c];
+            cnt--;
+          }
+        }
+        if (y >= r && y < h) {
+          out[((y - r) * w + x) * channelCount + c] = sum / cnt;
+        }
       }
     }
   }
