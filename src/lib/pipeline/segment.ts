@@ -377,7 +377,8 @@ function segmentPass(
   const EDGE_PASS = 35;
 
   const ring = Math.max(2, Math.round(Math.min(width, height) * 0.06));
-  const maxSamples = Math.ceil(width / 2) * Math.ceil(ring / 2) * 2 * 2 + Math.ceil((height - 2 * ring) / 2) * Math.ceil(ring / 2) * 2 * 2;
+  const maxSamples = Math.ceil(width / 2) * Math.ceil(ring / 2) * 2 * 2
+    + Math.ceil((height - 2 * ring) / 2) * Math.ceil(ring / 2) * 2 * 2;
   const samples = new Uint32Array(maxSamples);
   let sc = 0;
   const addSample = (x: number, y: number) => {
@@ -432,9 +433,9 @@ function segmentPass(
 
   // ---- Stage 2: flood fill from outside, guided by bg color model ---------
   // Start from the frame border and walk inward while pixels are plausibly bg
-  // (low sobel + close to one of the bg clusters). This gives a much cleaner
+  // (weak sobel + close to one of the bg clusters). This gives a much cleaner
   // "definitely-background" seed than a pure-edge threshold.
-  const flood = new Uint8Array(n);
+  const flood = new Int8Array(n); // 0 unknown, 1 bg, 2 blocked-by-edge
   const stack = new Int32Array(n);
   let sp = 0;
 
@@ -469,21 +470,22 @@ function segmentPass(
       const ny = y + (d === 2 ? -1 : d === 3 ? 1 : 0);
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       const j = ny * width + nx;
-      if (flood[j] === 1) continue;
-      if (flood[j] === 2) continue;
-      if (edge[j] > EDGE_PASS) continue;
+      if (flood[j] !== 0) continue;
+      if (edge[j] > EDGE_PASS) {
+        flood[j] = 2;
+        continue;
+      }
       const q = j * 4;
       const dist = bgDistance(rgba[q], rgba[q + 1], rgba[q + 2], bgCenters, scale);
 
       const edgeDamp = 1 - Math.min(1, edge[j] / EDGE_PASS) * 0.65;
       if (dist <= cutoff * edgeDamp) {
         stack[sp++] = j;
-      } else {
-        // Stop any further spread along this edge of the product. Non-bg-colored
-        // pixels can still be walkable later through other, bg-colored neighbors,
-        // but we must not let one strong edge let the flood slide around the whole
-        // object or leak into the product color class through weak edge pixels.
-        flood[j] = 2;
+      } else if (edge[j] <= EDGE_PASS * 0.55 && dist <= cutoff * 1.7) {
+        // Weak edge + reasonably bg-colored: keep it as bg even though it is
+        // outside the tight dampened band. This lets the flood pierce minor color
+        // noise near real edges instead of haloing around them.
+        stack[sp++] = j;
       }
     }
     if (sp >= n) break;
@@ -519,9 +521,9 @@ function segmentPass(
   // Opening (erode 1 + dilate 1): strips the remaining 1px blend halo and
   // kills sub-3px speckles in one move.
   const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
-  const { labels: openedLabels, sizes: openedSizes } = components(opened, width, height);
-  const openedCount = openedSizes.length;
-  const openedSizesUint32 = new Uint32Array(openedSizes);
+  const openedStats = components(opened, width, height);
+  const openedCount = openedStats.sizes.length;
+  const openedSizesUint32 = new Uint32Array(openedStats.sizes);
   const openedMinSize = Math.max(24, n * 0.004);
   const openedKeep = new Uint8Array(openedCount);
   for (let c = 0; c < openedCount; c++) {
@@ -531,15 +533,28 @@ function segmentPass(
   // is mostly product (or where the object is genuinely small but real) still
   // returns a usable cutout instead of an empty result.
   const fallbackToShaved = openedKeep.every((v) => v === 0) && openedCount > 0;
-  const labels = fallbackToShaved
-    ? components(shaved, width, height).labels
-    : openedLabels;
-  const sizes = fallbackToShaved
-    ? components(shaved, width, height).sizes
-    : openedSizesUint32;
+  // Diagnostic gate: in test environments, dump enough post-opening info to
+  // localize the next failure without changing production behavior. Use a
+  // module-level side channel so a test can read it without intercepting console.
+  try {
+    const __segDiag = (globalThis as unknown as { __segDiag?: Record<string, number> }).__segDiag;
+    if (Array.isArray(__segDiag)) {
+      // compat: older probe injected an array; treat length as openedCount
+      __segDiag[__segDiag.length - 1] = openedCount;
+    } else if (__segDiag) {
+      const componentsOnShaved = fallbackToShaved ? components(shaved, width, height).sizes.length : -1;
+      __segDiag.openedFg = opened.reduce((a, b) => a + b, 0);
+      __segDiag.shavedFg = shaved.reduce((a, b) => a + b, 0);
+      __segDiag.openedCount = openedCount;
+      __segDiag.openedComponents = openedCount;
+      __segDiag.componentsOnShaved = componentsOnShaved;
+      __segDiag.fallback = fallbackToShaved ? 1 : 0;
+    }
+  } catch { /* noop */ }
+  const statsSource = fallbackToShaved ? components(shaved, width, height) : openedStats;
+  const labels = statsSource.labels;
+  const sizes = new Uint32Array(statsSource.sizes);
   const compCount = sizes.length;
-
-  // Aggregate per-component geometry + statistics.
   const compArea = new Float64Array(compCount);
   const compSumX = new Float64Array(compCount);
   const compSumY = new Float64Array(compCount);
@@ -560,15 +575,7 @@ function segmentPass(
       if (y < compMinY[l]) compMinY[l] = y;
       if (x > compMaxX[l]) compMaxX[l] = x;
       if (y > compMaxY[l]) compMaxY[l] = y;
-      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
-        if (fallbackToShaved) {
-          // The shaved mask already measured border contact during the shave
-          // pass, so reuse that signal and break out once we hit the first
-          // border pixel of this component.
-          break;
-        }
-        compBorder[l]++;
-      }
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) compBorder[l]++;
     }
   }
 
@@ -603,7 +610,12 @@ function segmentPass(
   for (let c = 0; c < compCount; c++) if (keep[c]) ranked.push(c);
   ranked.sort((a, b) => scoreOf(b) - scoreOf(a));
   const candidates: DetectedObject[] = ranked.slice(0, 4).map((c) => ({
-    box: { x: compMinX[c], y: compMinY[c], w: compMaxX[c] - compMinX[c] + 1, h: compMaxY[c] - compMinY[c] + 1 },
+    box: {
+      x: compMinX[c],
+      y: compMinY[c],
+      w: compMaxX[c] - compMinX[c] + 1,
+      h: compMaxY[c] - compMinY[c] + 1,
+    },
     area: compArea[c],
     score: scoreOf(c),
   }));
