@@ -17,6 +17,8 @@ import {
   type BackdropId,
   type Placement,
   type RatioId,
+  type PipelineParams,
+  type DetectedFlaw,
 } from "@/lib/pipeline/banner";
 import { DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
 import { loadSample as loadSamplePhoto, type SamplePhoto } from "@/lib/pipeline/samplePhotos";

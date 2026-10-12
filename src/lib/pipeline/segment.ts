@@ -504,6 +504,7 @@ function segmentPass(
   }
 
   // Build the fg mask BEFORE scoring so scoreOf can access it
+  // (moved here for iterative rendering to work correctly)
   const fg = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
     const l = labels[i];

@@ -10,6 +10,299 @@
 import type { Cutout } from './segmentation';
 import { renderShadowIntensity, toneMapShadow, paintShadow, type ShadowOptions } from './shadow';
 import { paintDesign, type GeneratedDesign } from './design';
+import type { PipelineParams, DetectedFlaw } from './renderTypes';
+
+// Pipeline params are now defined in renderTypes.ts
+// These functions are kept for backward compatibility
+export type { PipelineParams, DetectedFlaw } from './renderTypes';
+
+export function renderWithParams(
+  ctx: CanvasRenderingContext2D,
+  cutout: Cutout,
+  params: PipelineParams,
+  W: number,
+  H: number,
+  backdropId: BackdropId = 'studio'
+): { flaws: DetectedFlaw[]; qualityScore: number } {
+  const { autoPlacement, drawBanner } = require('./banner');
+  
+  const shadowOpts: ShadowOptions = {
+    direction: params.shadowDirection,
+    length: params.shadowLength,
+    softness: 0.6,
+    opacity: params.shadowOpacity,
+    contact: true,
+  };
+  
+  const place = {
+    x: W / 2,
+    y: H * 0.75,
+    scale: Math.max(0.25, Math.min(2.5, params.placementScale)),
+  };
+  
+  drawBanner(ctx, cutout, place, {
+    backdrop: backdropId,
+    ratio: '4:5',
+    shadow: shadowOpts,
+  });
+  
+  // Analyze the result for flaws
+  const result = analyzeRenderQuality(ctx, cutout, place, shadowOpts, W, H);
+  
+  return {
+    flaws: result.flaws,
+    qualityScore: result.qualityScore,
+  };
+}
+
+// Analyze the rendered image for common flaws
+export function analyzeRenderQuality(
+  ctx: CanvasRenderingContext2D,
+  cutout: Cutout,
+  place: { x: number; y: number; scale: number },
+  shadowOpts: ShadowOptions,
+  W: number,
+  H: number,
+  complexityLevel: number = 0
+): { flaws: DetectedFlaw[]; qualityScore: number; complexityNotes: string[] } {
+  const flaws: DetectedFlaw[] = [];
+  const complexityNotes: string[] = [];
+  
+  // Get pixel data from canvas
+  const imageData = ctx.getImageData(0, 0, W, H);
+  const data = imageData.data;
+  const n = W * H;
+  
+  // ============ FLAW DETECTION ============
+  
+  // Check for background bleed (semi-transparent pixels around product edge)
+  let bgBleedPixels = 0;
+  let totalFgPixels = 0;
+  let edgePixels = 0;
+  let contaminatedEdgePixels = 0;
+  
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      const p = i * 4;
+      const a = data[p + 3];
+      
+      if (a > 128) {
+        totalFgPixels++;
+        
+        // Check if this pixel is on the edge (has transparent neighbor)
+        const hasTransparentNeighbor =
+          data[((y - 1) * W + x) * 4 + 3] < 128 ||
+          data[((y + 1) * W + x) * 4 + 3] < 128 ||
+          data[(y * W + (x - 1)) * 4 + 3] < 128 ||
+          data[(y * W + (x + 1)) * 4 + 3] < 128;
+        
+        if (hasTransparentNeighbor) {
+          edgePixels++;
+          
+          // Check if edge pixel is contaminated (low alpha or wrong color)
+          if (a < 200 || a > 240) {
+            contaminatedEdgePixels++;
+          }
+          
+          // Check for halo effect (edge pixel lighter than interior)
+          const r = data[p];
+          const g = data[p + 1];
+          const b = data[p + 2];
+          
+          // Sample interior pixels
+          let interiorR = 0, interiorG = 0, interiorB = 0, interiorCount = 0;
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const ni = ((y + dy) * W + (x + dx)) * 4;
+              const na = data[ni + 3];
+              if (na > 200) {
+                interiorR += data[ni];
+                interiorG += data[ni + 1];
+                interiorB += data[ni + 2];
+                interiorCount++;
+              }
+            }
+          }
+          
+          if (interiorCount > 0) {
+            interiorR /= interiorCount;
+            interiorG /= interiorCount;
+            interiorB /= interiorCount;
+            
+            const edgeLum = (r * 0.299 + g * 0.587 + b * 0.114);
+            const interiorLum = (interiorR * 0.299 + interiorG * 0.587 + interiorB * 0.114);
+            
+            // Halo: edge is significantly lighter than interior
+            if (edgeLum > interiorLum + 30) {
+              bgBleedPixels += 2; // Weight halo higher
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  const edgeContaminationRatio = edgePixels > 0 ? contaminatedEdgePixels / edgePixels : 0;
+  if (edgeContaminationRatio > 0.3) {
+    flaws.push({
+      type: 'background_bleed',
+      severity: Math.min(1, edgeContaminationRatio * 1.5),
+      regions: [{ x: 0, y: 0, w: W, h: H }],
+      description: `Edge contamination: ${(edgeContaminationRatio * 100).toFixed(0)}% of edge pixels have issues`,
+    });
+    complexityNotes.push(`Edge contamination: ${(edgeContaminationRatio * 100).toFixed(0)}%`);
+  }
+  
+  // Check for shadow quality
+  let shadowPixels = 0;
+  let shadowAvgAlpha = 0;
+  const groundY = Math.round(H * 0.7);
+  
+  // Scan the ground area for shadow
+  for (let x = Math.round(W * 0.1); x < Math.round(W * 0.9); x++) {
+    for (let dy = 0; dy < Math.round(H * 0.25); dy++) {
+      const y = groundY + dy;
+      const p = (y * W + x) * 4;
+      const a = data[p + 3];
+      const r = data[p];
+      const g = data[p + 1];
+      const b = data[p + 2];
+      
+      // Shadow detection: dark warm pixels
+      if (a > 15 && r < 100 && g < 85 && b < 75) {
+        shadowPixels++;
+        shadowAvgAlpha += a;
+      }
+    }
+  }
+  
+  shadowAvgAlpha /= Math.max(1, shadowPixels);
+  const shadowCoverage = shadowPixels / (W * 0.8 * H * 0.25);
+  
+  if (shadowCoverage < 0.02) {
+    flaws.push({
+      type: 'shadow_missing',
+      severity: 0.9,
+      regions: [{ x: 0, y: groundY, w: W, h: Math.round(H * 0.25) }],
+      description: 'Shadow is missing or invisible',
+    });
+    complexityNotes.push('Shadow: MISSING');
+  } else if (shadowCoverage < 0.08) {
+    flaws.push({
+      type: 'shadow_missing',
+      severity: 0.5,
+      regions: [{ x: 0, y: groundY, w: W, h: Math.round(H * 0.25) }],
+      description: `Shadow is very faint (${shadowCoverage.toFixed(3)} coverage)`,
+    });
+    complexityNotes.push(`Shadow: faint (${shadowCoverage.toFixed(3)})`);
+  } else if (shadowAvgAlpha < 50) {
+    flaws.push({
+      type: 'shadow_missing',
+      severity: 0.4,
+      regions: [{ x: 0, y: groundY, w: W, h: Math.round(H * 0.25) }],
+      description: `Shadow too weak (avg alpha ${shadowAvgAlpha.toFixed(0)})`,
+    });
+    complexityNotes.push(`Shadow: weak (${shadowAvgAlpha.toFixed(0)} alpha)`);
+  } else {
+    complexityNotes.push(`Shadow: OK (${shadowCoverage.toFixed(3)} cov, ${shadowAvgAlpha.toFixed(0)} alpha)`);
+  }
+  
+  // Check for plate/table connection (background included in cutout)
+  const { box } = cutout;
+  if (box.w > 0 && box.h > 0) {
+    // Check if the cutout box is too large relative to frame
+    const fgRatio = (box.w * box.h) / (W * H);
+    if (fgRatio > 0.45) {
+      flaws.push({
+        type: 'plate_connected',
+        severity: Math.min(1, (fgRatio - 0.35) * 2),
+        regions: [box],
+        description: `Cutout includes background: ${fgRatio.toFixed(2)} of frame`,
+      });
+      complexityNotes.push(`Plate connected: ${fgRatio.toFixed(2)} coverage`);
+    }
+    
+    // Check for thin connections (product silhouette includes narrow bg strips)
+    let thinConnections = 0;
+    for (let y = box.y; y < Math.min(H, box.y + box.h); y++) {
+      let fgRun = 0;
+      let maxFgRun = 0;
+      let inFg = false;
+      
+      for (let x = box.x; x < Math.min(W, box.x + box.w); x++) {
+        const a = data[((y * W + x) * 4) + 3];
+        if (a > 128) {
+          fgRun++;
+          inFg = true;
+        } else {
+          if (inFg && fgRun < 8) {
+            thinConnections++;
+          }
+          fgRun = 0;
+          inFg = false;
+        }
+      }
+      if (inFg && fgRun < 8) thinConnections++;
+      
+      if (thinConnections > 10) break;
+    }
+    
+    if (thinConnections > 10) {
+      flaws.push({
+        type: 'plate_connected',
+        severity: Math.min(1, thinConnections / 50),
+        regions: [box],
+        description: `Found ${thinConnections} thin background connections (plate/table)`,
+      });
+      complexityNotes.push(`Thin connections: ${thinConnections}`);
+    }
+  }
+  
+  // Check for missing details (product cut off or truncated)
+  let productEdgePixels = 0;
+  let cutoffIndicators = 0;
+  
+  // Check if product touches canvas edges (cut off)
+  for (let x = 0; x < W; x += 2) {
+    for (let y = 0; y < H; y += 2) {
+      const i = y * W + x;
+      const a = data[i * 4 + 3];
+      
+      if (a > 128) {
+        if (x < 10 || x > W - 10 || y < 10 || y > H - 10) {
+          cutoffIndicators++;
+        }
+        productEdgePixels++;
+      }
+    }
+  }
+  
+  if (cutoffIndicators > 20) {
+    flaws.push({
+      type: 'missing_details',
+      severity: Math.min(1, cutoffIndicators / 100),
+      regions: [
+        { x: 0, y: 0, w: W, h: 20 },
+        { x: 0, y: H - 20, w: W, h: 20 },
+        { x: 0, y: 0, w: 20, h: H },
+        { x: W - 20, y: 0, w: 20, h: H },
+      ],
+      description: `Product appears cut off at canvas edge (${cutoffIndicators} pixels)`,
+    });
+  }
+  
+  // ============ QUALITY SCORE ============
+  
+  let qualityScore = 1;
+  for (const flaw of flaws) {
+    qualityScore -= flaw.severity * 0.35;
+  }
+  qualityScore = Math.max(0.1, Math.min(1, qualityScore));
+  
+  return { flaws, qualityScore, complexityNotes };
+}
 
 export type BackdropId =
   | 'studio'
@@ -53,6 +346,118 @@ export type BannerOptions = {
   ratio: RatioId;
   shadow: ShadowOptions;
 };
+
+export type AdaptiveFix = {
+  kind: 'tolerance' | 'morph' | 'shave' | 'shadowOpacity' | 'shadowLength' | 'shadowDirection' | 'scale' | 'backdrop';
+  value: number;
+  reason: string;
+};
+
+export function applyFix(Cutout: Cutout, currentParams: PipelineParams, fix: AdaptiveFix): PipelineParams {
+  const p = { ...currentParams };
+  
+  switch (fix.kind) {
+    case 'tolerance':
+      // Reduce tolerance to tighten cutout
+      p.tolerance = Math.max(4, currentParams.tolerance - Math.abs(fix.value));
+      break;
+    case 'morph':
+      // Increase morph radius to remove thin connections
+      p.morphRadius = Math.min(6, currentParams.morphRadius + Math.abs(fix.value));
+      break;
+    case 'shave':
+      // More aggressive shave
+      p.shaveMultiplier = Math.max(0.3, currentParams.shaveMultiplier - Math.abs(fix.value) * 0.1);
+      break;
+    case 'shadowOpacity':
+      p.shadowOpacity = Math.max(0.1, Math.min(1, currentParams.shadowOpacity + fix.value));
+      break;
+    case 'shadowLength':
+      p.shadowLength = Math.max(0.2, Math.min(1.5, currentParams.shadowLength + fix.value * 0.1));
+      break;
+    case 'shadowDirection':
+      p.shadowDirection = Math.max(0, Math.min(180, currentParams.shadowDirection + fix.value));
+      break;
+    case 'scale':
+      p.placementScale = Math.max(0.25, Math.min(2.5, currentParams.placementScale + fix.value * 0.1));
+      break;
+    case 'backdrop':
+      // Adjust backdrop contrast (would need different implementation)
+      break;
+  }
+  
+  return p;
+}
+
+export function generateFixes(flaws: DetectedFlaw[], currentParams: PipelineParams): AdaptiveFix[] {
+  const fixes: AdaptiveFix[] = [];
+  
+  for (const flaw of flaws) {
+    switch (flaw.type) {
+      case 'background_bleed':
+        // Tighten tolerance and increase shave
+        fixes.push({
+          kind: 'tolerance',
+          value: -Math.min(10, flaw.severity * 8),
+          reason: `Reduce tolerance to fix background bleed (severity: ${flaw.severity.toFixed(2)})`,
+        });
+        fixes.push({
+          kind: 'shave',
+          value: Math.min(0.3, flaw.severity * 0.2),
+          reason: `Increase shave aggressiveness`,
+        });
+        break;
+        
+      case 'plate_connected':
+        // Increase morph to break thin connections
+        fixes.push({
+          kind: 'morph',
+          value: Math.min(3, flaw.severity * 4),
+          reason: `Increase morph radius to break plate connections`,
+        });
+        fixes.push({
+          kind: 'shave',
+          value: Math.min(0.2, flaw.severity * 0.15),
+          reason: `More aggressive shave for background connections`,
+        });
+        break;
+        
+      case 'shadow_missing':
+        // Increase shadow opacity and length
+        fixes.push({
+          kind: 'shadowOpacity',
+          value: Math.min(0.3, flaw.severity * 0.4),
+          reason: `Increase shadow opacity (current: ${currentParams.shadowOpacity.toFixed(2)})`,
+        });
+        fixes.push({
+          kind: 'shadowLength',
+          value: Math.min(0.3, flaw.severity * 0.5),
+          reason: `Increase shadow length for more visible shadow`,
+        });
+        break;
+        
+      case 'missing_details':
+        // Adjust scale to zoom in/out properly
+        fixes.push({
+          kind: 'scale',
+          value: flaw.severity > 0.5 ? -0.1 : 0.1,
+          reason: `Adjust scale to avoid cutoff`,
+        });
+        break;
+    }
+  }
+  
+  // Deduplicate fixes by kind (keep the strongest)
+  const byKind = new Map<string, AdaptiveFix>();
+  for (const fix of fixes) {
+    const existing = byKind.get(fix.kind);
+    if (!existing || Math.abs(fix.value) > Math.abs(existing.value)) {
+      byKind.set(fix.kind, fix);
+    }
+  }
+  
+  return [...byKind.values()];
+}
 
 export function getRatio(id: RatioId) {
   return RATIOS.find((r) => r.id === id) ?? RATIOS[0];
