@@ -1,21 +1,18 @@
-// Platform utilities shared by the pipeline engines (segment / shadow / upscale).
+// ============================================================================
+// Pixels - Shared utilities for pipeline engines
+// ============================================================================
 
-/** Clamp a byte value into [0, 255].
- *
- *  Rounds to the nearest integer rather than truncating: pixel math routinely
- *  lands on values like 172.99998 that should be 173. Truncating here silently
- *  darkens every channel by up to 1, which breaks the bit-exactness guarantees
- *  the upscale engine documents (a constant field must stay constant).
- */
+/** Clamp byte value to [0, 255], rounding to nearest */
 export function clamp255(v: number): number {
   if (v < 0) return 0;
   if (v > 255) return 255;
   return Math.round(v);
 }
 
-/** 8-connected neighborhood dilation by radius 1. */
+/** 8-connected dilation by radius 1 */
 export function boxDilate8(src: Uint8Array, w: number, h: number): Uint8Array {
   const out = new Uint8Array(src.length);
+  
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
@@ -23,6 +20,7 @@ export function boxDilate8(src: Uint8Array, w: number, h: number): Uint8Array {
         out[i] = 1;
         continue;
       }
+      
       if (
         (x > 0 && src[i - 1]) ||
         (x < w - 1 && src[i + 1]) ||
@@ -37,18 +35,23 @@ export function boxDilate8(src: Uint8Array, w: number, h: number): Uint8Array {
       }
     }
   }
+  
   return out;
 }
 
-/** Chebyshev-ish chamfer distance, *inside* foreground pixels. */
+/** Chamfer distance transform, inside foreground */
 export function distanceInside(fg: Uint8Array, w: number, h: number): Float32Array {
   const INF = 1e9;
   const d = new Float32Array(fg.length);
+  
   for (let i = 0; i < fg.length; i++) d[i] = fg[i] ? INF : 0;
+  
+  // Forward pass
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       if (!fg[i]) continue;
+      
       let m = d[i];
       if (x > 0) m = Math.min(m, d[i - 1] + 3);
       if (y > 0) m = Math.min(m, d[i - w] + 3);
@@ -57,10 +60,13 @@ export function distanceInside(fg: Uint8Array, w: number, h: number): Float32Arr
       d[i] = m;
     }
   }
+  
+  // Backward pass
   for (let y = h - 1; y >= 0; y--) {
     for (let x = w - 1; x >= 0; x--) {
       const i = y * w + x;
       if (!fg[i]) continue;
+      
       let m = d[i];
       if (x < w - 1) m = Math.min(m, d[i + 1] + 3);
       if (y < h - 1) m = Math.min(m, d[i + w] + 3);
@@ -69,30 +75,31 @@ export function distanceInside(fg: Uint8Array, w: number, h: number): Float32Arr
       d[i] = m;
     }
   }
+  
+  // Normalize
   for (let i = 0; i < fg.length; i++) d[i] /= 3;
   return d;
 }
 
-/** Distance from the *outside* of a binary mask (inverts then uses inside). */
+/** Distance from outside of binary mask */
 export function distanceOutside(bin: Uint8Array, w: number, h: number): Float32Array {
   const inv = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) inv[i] = bin[i] ? 0 : 1;
   return distanceInside(inv, w, h);
 }
 
-/** Three-pass separable box blur operating on the luminance of `src`.
- *  Used by upscale's chroma stage to smooth Cb/Cr planes (which are stored as
- *  one-channel Float32Arrays here).
- */
+/** 3-pass separable box blur on luminance */
 export function boxBlur3(src: Float32Array, w: number, h: number, radius: number, channelCount = 1): Float32Array {
   const r = Math.max(0, Math.min(radius, Math.min(w, h, 60)));
   if (r === 0) return src.slice();
+  
   const tmp = new Float32Array(src.length);
   const out = new Float32Array(src.length);
   const win = 2 * r + 1;
+  
   const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
-
-  // horizontal pass (clamp-to-edge), strided by channelCount
+  
+  // Horizontal pass
   for (let y = 0; y < h; y++) {
     const row = y * w * channelCount;
     for (let c = 0; c < channelCount; c++) {
@@ -108,8 +115,8 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
       }
     }
   }
-
-  // vertical pass
+  
+  // Vertical pass
   for (let x = 0; x < w; x++) {
     for (let c = 0; c < channelCount; c++) {
       let sum = 0;
@@ -124,10 +131,11 @@ export function boxBlur3(src: Float32Array, w: number, h: number, radius: number
       }
     }
   }
+  
   return out;
 }
 
-/** Deterministic PRNG (mulberry32) used for reproducible organic jitter. */
+/** Deterministic PRNG (mulberry32) */
 export function mulberry32(a: number): () => number {
   return function () {
     a |= 0;
@@ -138,12 +146,12 @@ export function mulberry32(a: number): () => number {
   };
 }
 
-/** Luminance of an 8-bit RGB pixel (Rec. 709). */
+/** Rec. 709 luminance */
 export function luminance(r: number, g: number, b: number): number {
   return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
-/** Smoothstep between 0 and 1. */
+/** Smoothstep between 0 and 1 */
 export function smoothstep(edge0: number, edge1: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0 || 1)));
   return t * t * (3 - 2 * t);

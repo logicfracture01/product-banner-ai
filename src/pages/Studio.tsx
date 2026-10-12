@@ -401,7 +401,7 @@ export default function Studio() {
       } catch {
         setDetection(null);
       }
-      const target = detectionToBox(primary);
+      const target = primary ? detectionToBox(primary) : null;
       if (fromAi && cutout && target) {
         const agreed = boxIoU(cutout.box, target);
         if (agreed < 0.15) {

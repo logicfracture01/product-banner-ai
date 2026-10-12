@@ -1,64 +1,42 @@
-// Generative design engine — a unique, coherent studio scene on demand.
-//
-// HOW UNIQUENESS WORKS: a seed drives a mulberry32 PRNG that picks the scene's
-// specifics (palette family, light angle, shapes, floor, grain) — while
-// HARMONY RULES (not randomness) constrain how those choices relate to the
-// product: the backdrop hue is derived from the product's dominant color via
-// analogous/complement/neutral strategies, so every random design still
-// flatters the product. Consequences:
-//
-//   same seed  → byte-identical design (the "Replay this exact design" button)
-//   new seed   → a genuinely different, never-repeated look
-//
-// paintDesign() draws at banner resolution on a 2D canvas; the compositor
-// renders it behind the cutout in place of a fixed backdrop gradient.
+// ============================================================================
+// Generative Design Engine - Unique, product-matched studio scenes
+// ============================================================================
+// Creates coherent backdrop designs based on the product's color palette.
+// Uses harmony rules (not pure randomness) to ensure the design flatters
+// the product.
+// ============================================================================
 
-import type { StyleAnalysis } from "./styles";
+import type { StyleAnalysis } from './styles';
 
-// Cache of grain tiles keyed by seed+grain — generating the tile costs a few
-// hundred fillRects on a small canvas, so reusing it across the ~dozens of
-// re-renders a slider drag triggers keeps the preview buttery.
-const grainTileCache = new Map<string, HTMLCanvasElement>();
 const GRAIN_TILE_SIZE = 96;
+const grainTileCache = new Map<string, HTMLCanvasElement>();
 
 export type GeneratedDesign = {
   seed: number;
-  /** Base gradient stops (top, bottom) in css color strings. */
   top: string;
   bottom: string;
-  /** Accent hue (0..360) harmonized with the product palette. */
   accentHue: number;
-  /** Light setup chosen for this scene. */
   light: {
-    /** Light azimuth in degrees (drives the shadow engine to match!). */
     direction: number;
     softness: number;
     opacity: number;
-    /** Warm (1) .. cool (-1) light tint. */
     temperature: number;
   };
-  /** Surface treatment of the backdrop. */
   surface: {
-    /** Subtle vignette strength 0..1. */
     vignette: number;
-    /** Paper-grain amount 0..1. */
     grain: number;
-    /** Optional soft geometric shapes in the backdrop. */
     shapes: Array<{
-      kind: "circle" | "arc" | "band";
+      kind: 'circle' | 'arc' | 'band';
       x: number; y: number; r: number;
       alpha: number;
       hue: number;
     }>;
-    /** Floor style under the product. */
-    floor: "seam" | "reflect" | "none";
+    floor: 'seam' | 'reflect' | 'none';
   };
-  /** Suggested backdrop family name for the UI. */
   family: string;
 };
 
-/** Deterministic PRNG (mulberry32). */
-export function makeRng(seed: number): () => number {
+function makeRng(seed: number): () => number {
   let a = seed >>> 0;
   return function () {
     a |= 0;
@@ -69,13 +47,7 @@ export function makeRng(seed: number): () => number {
   };
 }
 
-/**
- * HSL color with explicit alpha, in the legacy comma-separated syntax
- * canvas 2D accepts everywhere (`hsla(h, s%, l%, a)`).
- * NOTE: the modern space-separated form `hsl(h s% l% / a)` is what `hsl()`
- * above emits for opaque fills, but `addColorStop` chokes on mixing that
- * syntax with a comma alpha — so gradients always use THIS helper.
- */
+export { makeRng };
 function hsla(h: number, s: number, l: number, a: number): string {
   return `hsla(${Math.round(((h % 360) + 360) % 360)}, ${Math.round(s)}%, ${Math.round(l)}%, ${a})`;
 }
@@ -85,250 +57,230 @@ function hsl(h: number, s: number, l: number): string {
 }
 
 const FAMILIES = [
-  "Editorial",
-  "Atelier",
-  "Gallery",
-  "Sunlit",
-  "Nocturne",
-  "Pastel Study",
+  { name: 'Editorial', baseHueRange: [0, 30], satRange: [15, 30], lightDir: [40, 80], temp: [0.2, 0.5] },
+  { name: 'Atelier', baseHueRange: [200, 240], satRange: [20, 35], lightDir: [120, 160], temp: [-0.3, 0.1] },
+  { name: 'Gallery', baseHueRange: [0, 360], satRange: [5, 15], lightDir: [30, 60], temp: [-0.2, 0.3] },
+  { name: 'Sunlit', baseHueRange: [20, 50], satRange: [25, 45], lightDir: [20, 50], temp: [0.4, 0.7] },
+  { name: 'Nocturne', baseHueRange: [220, 280], satRange: [10, 25], lightDir: [100, 140], temp: [-0.5, -0.2] },
+  { name: 'Pastel Study', baseHueRange: [0, 360], satRange: [20, 35], lightDir: [45, 75], temp: [0.1, 0.4] },
 ] as const;
 
-/**
- * Generate a unique-but-coherent design from an analysis + seed.
- * Harmony rules (not randomness) pick the *relationship* between the design
- * and the product; randomness picks the specifics.
- */
 export function generateDesign(analysis: StyleAnalysis | null, seed: number): GeneratedDesign {
   const rng = makeRng(seed);
   const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)];
-
-  // --- palette harmony: derive the backdrop hue from the product palette ---
-  // dominant product hue (0 if unknown/neutral)
+  
+  // Extract product hue from palette
   let productHue = 0;
   let productSat = 0;
+  
   if (analysis && analysis.palette.length > 0) {
-    // read the most saturated palette colour (its hue drives the harmony)
     for (const hex of analysis.palette) {
       const r = parseInt(hex.slice(1, 3), 16) / 255;
       const g = parseInt(hex.slice(3, 5), 16) / 255;
       const b = parseInt(hex.slice(5, 7), 16) / 255;
+      
       const mx = Math.max(r, g, b);
       const mn = Math.min(r, g, b);
       const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      
       if (sat > productSat) {
         productSat = sat;
-        let h = 0;
         if (mx !== mn) {
           const d = mx - mn;
-          if (mx === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
-          else if (mx === g) h = ((b - r) / d + 2) * 60;
-          else h = ((r - g) / d + 4) * 60;
+          if (mx === r) productHue = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+          else if (mx === g) productHue = ((b - r) / d + 2) * 60;
+          else productHue = ((r - g) / d + 4) * 60;
         }
-        productHue = h;
       }
     }
   }
-
-  // harmony strategy: analogous / complement / near-neutral
-  const strategy = productSat > 0.3 ? pick(["analogous", "complement", "analogous"] as const) : pick(["neutral-warm", "neutral-cool"] as const);
+  
+  // Pick a family
+  const family = pick(FAMILIES);
+  const isDark = family.name === 'Nocturne' || (family.name === 'Gallery' && rng() < 0.4);
+  
+  // Derive backdrop hue from product
   let baseHue: number;
   let sat: number;
-  if (strategy === "analogous") baseHue = productHue + (rng() * 40 - 20);
-  else if (strategy === "complement") baseHue = productHue + 180 + (rng() * 24 - 12);
-  else baseHue = rng() < 0.5 ? 30 + rng() * 20 : 200 + rng() * 30;
-  sat = strategy.startsWith("neutral") ? 8 + rng() * 14 : 16 + rng() * 22;
-
-  const family = pick(FAMILIES);
-  const dark = family === "Nocturne" || (family === "Gallery" && rng() < 0.35);
-  const topL = dark ? 14 + rng() * 10 : 88 + rng() * 6;
-  const botL = dark ? 7 + rng() * 6 : topL - (10 + rng() * 14);
-  const hueDrift = rng() * 16 - 8;
-
-  // --- light: coherent with the family, matched later by the shadow engine ---
-  const direction = Math.round(rng() * 180);
-  const temperature = family === "Sunlit" ? 0.5 + rng() * 0.5 : rng() * 1.4 - 0.7;
-
-  // --- surface: shapes + grain + vignette ---
-  const shapeCount = Math.floor(rng() * 3); // 0..2 shapes
-  const shapes: GeneratedDesign["surface"]["shapes"] = [];
+  
+  if (productSat > 0.2) {
+    // Harmonize with product
+    const strategies = ['analogous', 'analogous', 'complement'];
+    const strategy = pick(strategies);
+    
+    if (strategy === 'analogous') {
+      baseHue = productHue + (rng() * 40 - 20);
+    } else {
+      baseHue = productHue + 180 + (rng() * 30 - 15);
+    }
+  } else {
+    // Neutral product - use family default
+    const [hMin, hMax] = family.baseHueRange;
+    baseHue = hMin + rng() * (hMax - hMin);
+  }
+  
+  sat = isDark
+    ? 8 + rng() * 12
+    : family.satRange[0] + rng() * (family.satRange[1] - family.satRange[0]);
+  
+  // Light setup
+  const [lightMin, lightMax] = family.lightDir;
+  const direction = Math.round(lightMin + rng() * (lightMax - lightMin));
+  const temperature = family.temp[0] + rng() * (family.temp[1] - family.temp[0]);
+  
+  // Surface treatment
+  const vignette = 0.1 + rng() * 0.25;
+  const grain = 0.1 + rng() * 0.3;
+  
+  const shapeCount = Math.floor(rng() * 3);
+  const shapes: GeneratedDesign['surface']['shapes'] = [];
+  
   for (let i = 0; i < shapeCount; i++) {
     shapes.push({
-      kind: pick(["circle", "arc", "band"] as const),
-      x: 0.15 + rng() * 0.7,
-      y: 0.12 + rng() * 0.45,
-      r: 0.18 + rng() * 0.35,
-      alpha: 0.05 + rng() * 0.09,
-      hue: baseHue + hueDrift + (rng() * 30 - 15),
+      kind: pick(['circle', 'arc', 'band'] as const),
+      x: 0.1 + rng() * 0.8,
+      y: 0.1 + rng() * 0.5,
+      r: 0.15 + rng() * 0.35,
+      alpha: 0.03 + rng() * 0.06,
+      hue: baseHue + (rng() * 30 - 15),
     });
   }
-
+  
+  // Floor style
+  const floor = pick(['none', 'seam', 'reflect'] as const);
+  
   return {
     seed,
-    top: hsl(baseHue, sat, topL),
-    bottom: hsl(baseHue + hueDrift, sat * 0.9, botL),
-    accentHue: (baseHue + 180) % 360,
-    light: {
-      direction,
-      softness: 0.4 + rng() * 0.5,
-      opacity: 0.3 + rng() * 0.25,
-      temperature,
-    },
-    surface: {
-      vignette: dark ? 0.4 + rng() * 0.3 : 0.12 + rng() * 0.2,
-      grain: family === "Editorial" || family === "Atelier" ? 0.05 + rng() * 0.08 : rng() * 0.04,
-      shapes,
-      floor: pick(["seam", "reflect", "none"] as const),
-    },
-    family,
+    top: hsl(baseHue, sat, isDark ? 15 + rng() * 10 : 85 + rng() * 8),
+    bottom: hsl(baseHue + (rng() * 15 - 7), sat * 0.8, isDark ? 8 + rng() * 5 : 70 + rng() * 12),
+    accentHue: baseHue,
+    light: { direction, softness: 0.5 + rng() * 0.3, opacity: 0.35 + rng() * 0.2, temperature },
+    surface: { vignette, grain, shapes, floor },
+    family: family.name,
   };
 }
 
-/** Warm/cool light tint as rgba overlay color for the light pool. */
-export function lightTint(temperature: number): string {
-  // temperature 1 = warm (sunset), -1 = cool (north window)
-  const t = Math.max(-1, Math.min(1, temperature));
-  const h = t >= 0 ? 36 - t * 14 : 210 + Math.abs(t) * 16;
-  const s = 40 + Math.abs(t) * 45;
-  return hsl(h, s, 88);
+export function randomSeed(): number {
+  return (Math.random() * 2147483647) >>> 0;
 }
 
-/**
- * Paint a generated design onto a canvas of W x H.
- * Deterministic per design (no hidden state).
- */
+// Paint the generated design onto a canvas
 export function paintDesign(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  design: GeneratedDesign,
-) {
-  const { surface } = design;
-  // Guard: painting with a zero/negative extent throws in some browsers.
-  if (W <= 0 || H <= 0) return;
-
-  // base gradient
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, design.top);
-  g.addColorStop(1, design.bottom);
-  ctx.fillStyle = g;
+  design: GeneratedDesign
+): void {
+  // Background gradient
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, design.top);
+  bg.addColorStop(1, design.bottom);
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
-
-  // soft geometric shapes behind the product
-  for (const s of surface.shapes) {
-    // clamp defensively: rng-derived values should already be in range, but a
-    // hand-edited or corrupted design object must never throw mid-render
-    const alpha = Math.max(0, Math.min(1, s.alpha));
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = hsl(s.hue, 30, 60);
-    if (s.kind === "circle") {
-      ctx.beginPath();
-      ctx.arc(s.x * W, s.y * H, Math.max(0, s.r) * Math.min(W, H), 0, Math.PI * 2);
-      ctx.fill();
-    } else if (s.kind === "arc") {
-      ctx.beginPath();
-      ctx.lineWidth = Math.min(W, H) * 0.02;
-      ctx.strokeStyle = hsl(s.hue, 30, 60);
-      ctx.arc(s.x * W, s.y * H, Math.max(0, s.r) * Math.min(W, H), Math.PI * 1.1, Math.PI * 1.9);
-      ctx.stroke();
-    } else {
-      // band: wide diagonal stripe
-      ctx.translate(s.x * W, s.y * H);
-      ctx.rotate(-0.35);
-      ctx.fillRect(-W, -H * 0.045, W * 2, H * 0.09);
-    }
-    ctx.restore();
+  
+  // Soft light pool at top
+  const lightPool = ctx.createRadialGradient(
+    W * 0.5, H * 0.15, 0,
+    W * 0.5, H * 0.15, W * 0.8
+  );
+  
+  if (design.light.temperature > 0) {
+    lightPool.addColorStop(0, `hsla(${design.accentHue + 30}, 40%, 95%, 0.3)`);
+  } else {
+    lightPool.addColorStop(0, `hsla(${design.accentHue}, 30%, 90%, 0.25)`);
   }
-
-  // light pool from the design's light direction (ties backdrop to shadow)
-  const rad = (design.light.direction * Math.PI) / 180;
-  const lx = W * (0.5 + Math.cos(rad) * 0.28);
-  const ly = H * (0.16 + Math.sin(rad) * 0.06);
-  const pool = ctx.createRadialGradient(lx, ly, 0, lx, ly, Math.max(W, H) * 0.75);
-  // Warm/cool light tint, re-derived at reduced lightness + 0.34 alpha —
-  // computed directly (NOT by string surgery on lightTint's output, which
-  // produced invalid `hsla(210 40% 72%, 0.34)` and threw in addColorStop).
-  const t = Math.max(-1, Math.min(1, design.light.temperature));
-  const tintHue = t >= 0 ? 36 - t * 14 : 210 + Math.abs(t) * 16;
-  const tintSat = 40 + Math.abs(t) * 45;
-  pool.addColorStop(0, hsla(tintHue, tintSat, 72, 0.34));
-  pool.addColorStop(1, "hsla(0, 0%, 50%, 0)");
-  ctx.fillStyle = pool;
+  lightPool.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = lightPool;
   ctx.fillRect(0, 0, W, H);
-
-  // floor treatment
-  if (surface.floor === "seam") {
-    const fy = H * 0.72;
-    const fg = ctx.createLinearGradient(0, fy, 0, H);
-    fg.addColorStop(0, "hsla(0, 0%, 50%, 0)");
-    fg.addColorStop(1, "hsla(0, 0%, 20%, 0.10)");
-    ctx.fillStyle = fg;
-    ctx.fillRect(0, fy, W, H - fy);
-    ctx.strokeStyle = "hsla(0, 0%, 30%, 0.10)";
-    ctx.lineWidth = Math.max(1, H * 0.002);
+  
+  // Soft shapes
+  for (const shape of design.surface.shapes) {
+    const x = shape.x * W;
+    const y = shape.y * H;
+    const r = shape.r * Math.min(W, H);
+    
     ctx.beginPath();
-    ctx.moveTo(0, fy);
-    ctx.lineTo(W, fy);
-    ctx.stroke();
-  } else if (surface.floor === "reflect") {
-    const fy = H * 0.76;
-    const rg = ctx.createLinearGradient(0, fy, 0, H);
-    rg.addColorStop(0, "hsla(0, 0%, 100%, 0.10)");
-    rg.addColorStop(0.5, "hsla(0, 0%, 100%, 0.02)");
-    rg.addColorStop(1, "hsla(0, 0%, 100%, 0)");
-    ctx.fillStyle = rg;
-    ctx.fillRect(0, fy, W, H - fy);
+    if (shape.kind === 'circle') {
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+    } else if (shape.kind === 'arc') {
+      ctx.arc(x, y, r, 0, Math.PI);
+    } else {
+      ctx.ellipse(x, y + r * 0.3, r * 0.6, r * 0.4, 0, 0, Math.PI * 2);
+    }
+    
+    ctx.fillStyle = hsla(shape.hue, 30, 70, shape.alpha);
+    ctx.fill();
   }
-
-  // vignette (strength clamped — a value > 1 would parse as alpha 1 anyway,
-  // but keep the string contract explicit)
-  const vign = Math.max(0, Math.min(1, surface.vignette));
-  const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.75);
-  vg.addColorStop(0, "hsla(0, 0%, 0%, 0)");
-  vg.addColorStop(1, `hsla(0, 0%, 0%, ${vign.toFixed(2)})`);
-  ctx.fillStyle = vg;
-  ctx.fillRect(0, 0, W, H);
-
-  // paper grain (procedural, deterministic) — drawn as a tiny tiled pattern
-  // instead of ~5,000 individual fillRect calls: a 96x96 noise tile stamped
-  // once via createPattern covers the canvas with two fillRects total, which
-  // is ~2 orders of magnitude cheaper and identical-looking at preview scale.
-  if (surface.grain > 0.01) {
-    const TILE = GRAIN_TILE_SIZE;
-    const key = `${design.seed}|${surface.grain.toFixed(3)}`;
-    let tile = grainTileCache.get(key);
-    if (!tile) {
-      // bounded cache: designs are one-off, so evict when it grows past a
-      // handful of entries (each tile is only 96x96 = ~37 KB of pixels)
-      if (grainTileCache.size > 8) grainTileCache.clear();
-      const rng = makeRng(design.seed ^ 0x5f3759df);
-      tile = document.createElement("canvas");
-      tile.width = TILE;
-      tile.height = TILE;
-      const tctx = tile.getContext("2d")!;
-      const dark = `hsla(0, 0%, 0%, ${(surface.grain * 0.5).toFixed(3)})`;
-      const light = `hsla(0, 0%, 100%, ${(surface.grain * 0.4).toFixed(3)})`;
-      // same dot density per unit area as the old per-pixel loop
-      const dots = Math.floor(TILE * TILE * 0.002);
-      tctx.fillStyle = dark;
-      for (let i = 0; i < dots; i++) {
-        tctx.fillRect(rng() * TILE, rng() * TILE, 1, 1);
-      }
-      tctx.fillStyle = light;
-      for (let i = 0; i < dots; i++) {
-        tctx.fillRect(rng() * TILE, rng() * TILE, 1, 1);
-      }
-      grainTileCache.set(key, tile);
-    }
-    const pattern = ctx.createPattern(tile, "repeat");
-    if (pattern) {
-      ctx.fillStyle = pattern;
-      ctx.fillRect(0, 0, W, H);
-    }
+  
+  // Vignette
+  if (design.surface.vignette > 0) {
+    const vig = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, `rgba(0,0,0,${design.surface.vignette * 0.4})`);
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, W, H);
+  }
+  
+  // Grain texture
+  if (design.surface.grain > 0) {
+    const grainCanvas = getGrainTile(design.seed, design.surface.grain);
+    ctx.drawImage(grainCanvas, 0, 0, W, H);
+  }
+  
+  // Floor treatment
+  if (design.surface.floor === 'seam') {
+    const seamY = H * 0.7;
+    const seam = ctx.createLinearGradient(0, seamY, 0, H);
+    seam.addColorStop(0, 'rgba(0,0,0,0)');
+    seam.addColorStop(0.5, 'rgba(0,0,0,0.03)');
+    seam.addColorStop(1, 'rgba(0,0,0,0.08)');
+    ctx.fillStyle = seam;
+    ctx.fillRect(0, seamY, W, H - seamY);
+    
+    // Subtle line
+    ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, seamY);
+    ctx.lineTo(W, seamY);
+    ctx.stroke();
+  } else if (design.surface.floor === 'reflect') {
+    const floorY = H * 0.65;
+    const grad = ctx.createLinearGradient(0, floorY, 0, H);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.3, 'rgba(255,255,255,0.02)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.1)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, floorY, W, H - floorY);
   }
 }
 
-/** Random seed for the "surprise me" flow. */
-export function randomSeed(): number {
-  return (Math.random() * 0xffffffff) >>> 0;
+function getGrainTile(seed: number, amount: number): HTMLCanvasElement {
+  const key = `${seed}-${Math.round(amount * 100)}`;
+  const cached = grainTileCache.get(key);
+  if (cached) return cached;
+  
+  const canvas = document.createElement('canvas');
+  canvas.width = GRAIN_TILE_SIZE;
+  canvas.height = GRAIN_TILE_SIZE;
+  const ctx = canvas.getContext('2d')!;
+  
+  const imageData = ctx.createImageData(GRAIN_TILE_SIZE, GRAIN_TILE_SIZE);
+  const data = imageData.data;
+  
+  const rng = makeRng(seed);
+  const intensity = Math.round(amount * 20);
+  
+  for (let i = 0; i < data.length; i += 4) {
+    const noise = (rng() - 0.5) * intensity;
+    const base = 128 + noise;
+    data[i] = base;
+    data[i + 1] = base;
+    data[i + 2] = base;
+    data[i + 3] = Math.round(amount * 60);
+  }
+  
+  ctx.putImageData(imageData, 0, 0);
+  grainTileCache.set(key, canvas);
+  return canvas;
 }

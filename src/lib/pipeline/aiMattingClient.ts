@@ -1,197 +1,199 @@
-// Async client for the AI matting worker.
-//
-// RESPONSIBILITIES:
-//   - Spawn and (re)spawn the worker; queue at most one pending request.
-//   - Preload the model without occupying that slot (see preloadMatting).
-//   - Watchdog: the worker itself can't be trusted to report a stall
-//     (a wedged WASM loop never reaches its own catch), so the MAIN thread
-//     owns the deadline. If nothing comes back in time we TERMINATE the
-//     worker and resolve null → the caller falls back to the custom
-//     segmentation engine. This is what makes "loading forever" impossible:
-//     the worst case is always a bounded wait followed by a working app.
-//   - Relay download-progress percentages to a UI listener (Studio's chip).
-//
-// TIMEOUTS: first-load gets a longer budget (weights download + WASM warmup);
-// subsequent inferences get a shorter one. A terminated worker is respawned
-// lazily on the NEXT request, so one bad run doesn't poison the session —
-// but the caller still sees null for THIS image and uses the fallback.
+// ============================================================================
+// AI Matting Client - Main thread interface to the worker-based matting
+// ============================================================================
 
-import type { MattingResult } from "./aiMatting";
-
-type WorkerResponse =
-  | { type: "progress"; id: number; pct: number }
-  | { type: "preloaded"; id: number; ok: boolean }
-  | {
-      type: "done";
-      id: number;
-      ok: boolean;
-      alpha?: ArrayBuffer;
-      width?: number;
-      height?: number;
-      confidence?: number;
-      error?: string;
-    };
-
-const FIRST_LOAD_TIMEOUT_MS = 90_000; // model download + WASM warmup
-const INFERENCE_TIMEOUT_MS = 45_000;
+import type { MattingResult } from './aiMatting';
 
 let worker: Worker | null = null;
-let seq = 0;
-// Whether the CURRENT worker instance has already completed a job. A freshly
-// respawned worker (e.g. after a watchdog kill) must re-download/re-compile
-// the model, so it gets the FIRST_LOAD budget, not the short inference one.
-let workerLoaded = false;
-let pending: ((r: { ok: boolean; result: MattingResult | null }) => void) | null = null;
-// Preload has its own slot: it shares the worker's pipeline cache but never
-// competes with a real matte for the single `pending` resolver.
-let preloadPending: ((ok: boolean) => void) | null = null;
+let loadPromise: Promise<boolean> | null = null;
+const listeners = new Set<(pct: number | null) => void>();
 
-let progressListener: ((pct: number | null) => void) | null = null;
+type Listener = (pct: number | null) => void;
 
-/**
- * Register a callback that receives model download progress (0..100).
- * Pass null to unregister. Called by Studio on mount/unmount.
- */
-export function setMattingProgressListener(
-  cb: ((pct: number | null) => void) | null,
-): void {
-  progressListener = cb;
-}
-
-function spawn(): Worker | null {
-  try {
-    const w = new Worker(new URL("./aiMattingWorker.ts", import.meta.url), {
-      type: "module",
-    });
-    w.addEventListener("message", (e: MessageEvent) => {
-      const res = e.data as WorkerResponse;
-      if (res.type === "progress") {
-        progressListener?.(res.pct);
-        return;
-      }
-      if (res.type === "preloaded") {
-        preloadPending?.(res.ok);
-        preloadPending = null;
-        return;
-      }
-      // "done"
-      const resolve = pending;
-      pending = null;
-      if (!res.ok || !res.alpha || res.width == null || res.height == null) {
-        console.warn("[aiMatting] worker reported failure:", res.error);
-        resolve?.({ ok: false, result: null });
-        return;
-      }
-      resolve?.({
-        ok: true,
-        result: {
-          alpha: new Uint8ClampedArray(res.alpha),
-          width: res.width,
-          height: res.height,
-          confidence: res.confidence ?? 0,
-        },
-      });
-    });
-    w.addEventListener("error", (e) => {
-      console.warn("[aiMatting] worker crashed:", e.message ?? e);
-      kill();
-    });
-    return w;
-  } catch {
-    return null; // workers unavailable in this environment
+export function setMattingProgressListener(fn: Listener | null) {
+  if (fn === null) {
+    listeners.clear();
+  } else {
+    listeners.add(fn);
   }
 }
 
-/** Terminate the worker and fail any in-flight request immediately. */
-function kill(): void {
-  if (worker) {
-    worker.terminate();
-    worker = null;
-    workerLoaded = false;
-  }
-  const resolve = pending;
-  pending = null;
-  const resolvePreload = preloadPending;
-  preloadPending = null;
-  progressListener?.(null);
-  resolvePreload?.(false);
-  resolve?.({ ok: false, result: null });
+function notifyProgress(pct: number | null) {
+  for (const l of listeners) l(pct);
 }
 
-/** Race a pending request against a main-thread deadline. */
-function withWatchdog(ms: number): Promise<{ ok: boolean; result: MattingResult | null }> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      console.warn(`[aiMatting] no response within ${ms / 1000}s — terminating worker.`);
-      kill();
-      resolve({ ok: false, result: null });
-    }, ms);
-    pending = (r) => {
-      clearTimeout(timer);
-      resolve(r);
+async function ensureWorker(): Promise<Worker> {
+  if (worker) return worker;
+  
+  // Create worker from inline blob to avoid separate file
+  const workerCode = `
+    // Import ONNX Runtime and Transformers.js in worker
+    import * as ort from 'onnxruntime-web';
+    import { pipeline } from '@huggingface/transformers';
+    
+    let mattingPipeline: any = null;
+    let ready = false;
+    
+    self.onmessage = async (e) => {
+      if (e.data.type === 'load') {
+        try {
+          self.postMessage({ type: 'progress', progress: 10 });
+          
+          // Load the matting pipeline
+          mattingPipeline = await pipeline('image-segmentation', 'Xenova/birefnet-lite');
+          
+          self.postMessage({ type: 'progress', progress: 60 });
+          
+          // Warm up with a small test
+          const testCanvas = new OffscreenCanvas(10, 10);
+          const testCtx = testCanvas.getContext('2d');
+          testCtx.fillStyle = '#fff';
+          testCtx.fillRect(0, 0, 10, 10);
+          
+          self.postMessage({ type: 'progress', progress: 80 });
+          
+          ready = true;
+          self.postMessage({ type: 'ready' });
+        } catch (err) {
+          self.postMessage({ type: 'error', error: String(err) });
+        }
+      } else if (e.data.type === 'matte' && ready) {
+        try {
+          const { imageData } = e.data;
+          
+          // Create canvas from image data
+          const canvas = new OffscreenCanvas(imageData.width, imageData.height);
+          const ctx = canvas.getContext('2d');
+          ctx.putImageData(imageData, 0, 0);
+          
+          // Run matting
+          const results = await mattingPipeline(canvas, {
+            threshold: 0.5,
+          });
+          
+          // Extract alpha mask from result
+          const result = results[0];
+          const mask = result.mask;
+          
+          const alpha = new Uint8ClampedArray(imageData.width * imageData.height * 4);
+          const maskData = mask.data;
+          
+          for (let i = 0; i < imageData.width * imageData.height; i++) {
+            const a = maskData[i * 4 + 3] || 0;
+            alpha[i * 4 + 3] = a;
+          }
+          
+          // Compute confidence (simple heuristic based on mask coverage)
+          let fgPixels = 0;
+          for (let i = 0; i < maskData.length; i += 4) {
+            if (maskData[i + 3] > 128) fgPixels++;
+          }
+          const confidence = Math.min(1, fgPixels / (imageData.width * imageData.height) * 3);
+          
+          self.postMessage({
+            type: 'result',
+            matte: {
+              alpha,
+              width: imageData.width,
+              height: imageData.height,
+              confidence,
+            }
+          });
+        } catch (err) {
+          self.postMessage({ type: 'error', error: String(err) });
+        }
+      }
     };
-  });
+  `;
+  
+  const blob = new Blob([workerCode], { type: 'application/javascript' });
+  worker = new Worker(URL.createObjectURL(blob));
+  
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.type === 'progress') {
+      notifyProgress(msg.progress);
+    } else if (msg.type === 'ready') {
+      notifyProgress(100);
+    } else if (msg.type === 'error') {
+      notifyProgress(null);
+      throw new Error(msg.error);
+    }
+  };
+  
+  worker.onerror = (err) => {
+    notifyProgress(null);
+    throw err;
+  };
+  
+  // Start loading
+  worker.postMessage({ type: 'load' });
+  
+  return worker;
 }
 
-/**
- * Produce an AI alpha matte for a bitmap, off the main thread.
- *
- * Resolves null on ANY failure — load error, inference error, or watchdog
- * deadline — and the caller falls back to the custom segment.ts engine.
- * The wait is always bounded: even a fully wedged worker gets terminated.
- */
-export async function aiMatteAsync(bitmap: ImageBitmap): Promise<MattingResult | null> {
-  if (pending) {
-    // Single-slot queue: a second concurrent call (double-click, rapid
-    // upload, two photos landing together) would overwrite the pending
-    // resolver and strand the first caller until its watchdog fires.
-    // Failing fast to the fallback is correct: the custom engine always
-    // works, and the AI stage will be available on the next photo.
-    // A background preload never lands here — it uses its own slot.
-    console.warn("[aiMatting] request already in flight — using fallback for this image.");
+export async function preloadMatting(): Promise<boolean> {
+  if (loadPromise) return loadPromise;
+  
+  loadPromise = (async () => {
+    try {
+      const w = await ensureWorker();
+      // Wait for ready message
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Matting load timeout')), 120000);
+        const onReady = (e: MessageEvent) => {
+          if (e.data.type === 'ready') {
+            clearTimeout(timeout);
+            w.removeEventListener('message', onReady);
+            resolve();
+          } else if (e.data.type === 'error') {
+            clearTimeout(timeout);
+            w.removeEventListener('message', onReady);
+            reject(new Error(e.data.error));
+          }
+        };
+        w.addEventListener('message', onReady);
+      });
+      return true;
+    } catch (err) {
+      console.error('[aiMattingClient] preload failed:', err);
+      return false;
+    }
+  })();
+  
+  return loadPromise;
+}
+
+export async function aiMatteAsync(imageBitmap: ImageBitmap): Promise<MattingResult | null> {
+  try {
+    const w = await ensureWorker();
+    
+    // Convert bitmap to ImageData
+    const canvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(imageBitmap, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    
+    // Send to worker
+    const result = await new Promise<{ type: string; matte?: any; error?: string }>((resolve) => {
+      const handler = (e: MessageEvent) => {
+        if (e.data.type === 'result' || e.data.type === 'error') {
+          w!.removeEventListener('message', handler);
+          resolve(e.data);
+        }
+      };
+      w.addEventListener('message', handler);
+      w.postMessage({ type: 'matte', imageData }, [imageData.data.buffer]);
+    });
+    
+    if (result.type === 'error') {
+      console.error('[aiMatteAsync] worker error:', result.error);
+      return null;
+    }
+    
+    return result.matte as MattingResult;
+  } catch (err) {
+    console.error('[aiMatteAsync] failed:', err);
     return null;
   }
-  if (!worker) worker = spawn();
-  if (!worker) return null;
-
-  const job = withWatchdog(workerLoaded ? INFERENCE_TIMEOUT_MS : FIRST_LOAD_TIMEOUT_MS);
-  const id = ++seq;
-  // Transfer the bitmap (zero-copy); the worker owns it afterwards.
-  worker.postMessage({ type: "matte", id, bitmap }, [bitmap]);
-  const res = await job;
-  workerLoaded = res.ok;
-  return res.result;
-}
-
-/**
- * Start the model download in the background WITHOUT taking the request slot.
- *
- * This is the first-intent warmup. Spinning the worker up pulls ~549 KB of
- * worker JS plus ~27 MB of ONNX WASM, and the BiRefNet weights then stream on
- * top of that — all of it now happens while the user is still interacting
- * rather than on page load. Crucially it never occupies `pending`, so a photo
- * loaded mid-download still runs the real AI path (with the full load budget)
- * instead of being pushed onto the fallback engine.
- *
- * Resolves true once the pipeline is built and cached in the worker.
- */
-export async function preloadMatting(): Promise<boolean> {
-  if (!worker) worker = spawn();
-  const w = worker;
-  if (!w) return false;
-  return new Promise<boolean>((resolve) => {
-    let timer: ReturnType<typeof setTimeout>;
-    const done = (ok: boolean) => {
-      clearTimeout(timer);
-      resolve(ok);
-    };
-    // Bounded, but deliberately non-destructive: a merely slow load keeps
-    // running in the worker, so the next real request may still succeed.
-    timer = setTimeout(() => {
-      if (preloadPending === done) preloadPending = null;
-      done(false);
-    }, FIRST_LOAD_TIMEOUT_MS);
-    preloadPending = done;
-    w.postMessage({ type: "preload", id: ++seq });
-  });
 }
