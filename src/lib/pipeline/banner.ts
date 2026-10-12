@@ -65,11 +65,41 @@ export function getBackdrop(id: BackdropId) {
   return BACKDROPS.find((b) => b.id === id) ?? BACKDROPS[0];
 }
 
-/** Scale product to ~62% of canvas height (width-capped), baseline at ~72% height. */
+/** Scale product to fit nicely in frame with proper zooming.
+ * The product should fill ~65-75% of the canvas height for good framing.
+ * Baseline is at ~75% height to leave room for shadow below.
+ * For small objects, zoom in more; for large objects, fit them properly.
+ */
 export function autoPlacement(cutout: Cutout, W: number, H: number): Placement {
   const { box } = cutout;
-  const scale = Math.min((H * 0.62) / box.h, (W * 0.72) / box.w);
-  return { x: W / 2, y: H * 0.72, scale };
+  if (box.w <= 0 || box.h <= 0) {
+    return { x: W / 2, y: H * 0.75, scale: 1 };
+  }
+  
+  // Target: product should fill 65-75% of canvas height depending on aspect
+  const targetHeightRatio = 0.7;
+  const targetWidthRatio = 0.8;
+  
+  // Calculate scale to fit product nicely
+  const scaleByHeight = (H * targetHeightRatio) / box.h;
+  const scaleByWidth = (W * targetWidthRatio) / box.w;
+  
+  // Use the larger scale to zoom in more on small objects
+  let scale = Math.max(scaleByHeight, scaleByWidth);
+  
+  // Clamp scale to reasonable range (don't over-zoom or under-zoom)
+  scale = Math.max(0.3, Math.min(3.0, scale));
+  
+  // Center the product horizontally
+  const scaledW = box.w * scale;
+  const scaledH = box.h * scale;
+  const x = W / 2;
+  
+  // Place baseline at ~75% height, adjusted for object size
+  const baselineRatio = 0.75;
+  const y = H * baselineRatio;
+  
+  return { x, y, scale };
 }
 
 // Cache the rasterized cutout per Cutout object (WeakMap: no leaks) so

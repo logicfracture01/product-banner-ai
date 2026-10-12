@@ -410,7 +410,9 @@ function segmentPass(
 
   // Shave: drop product pixels whose colour is essentially backdrop. Only
   // boundary-touching pixels are considered so interior detail is untouched.
-  const shaveCutoff = Math.max(2, cutoff * 0.5);
+  // Use a more aggressive shave to remove background-colored edges (like plates
+  // that match the table color).
+  const shaveCutoff = Math.max(4, cutoff * 0.7);
   const shaved = new Uint8Array(fg0);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -429,9 +431,9 @@ function segmentPass(
     }
   }
 
-  // Opening (erode 1 → dilate 1): strips the 1px anti-aliasing halo and kills
-  // sub-3px speckles without changing the size of what survives.
-  const opened = boxDilate(boxErode(shaved, width, height, 1), width, height, 1);
+  // Opening (erode 2 → dilate 2): more aggressive cleanup to remove thin
+  // background connections (like plates touching tables) and small speckles.
+  const opened = boxDilate(boxErode(shaved, width, height, 2), width, height, 2);
   const { labels, sizes } = components(opened, width, height);
   const compCount = sizes.length;
   const minSize = Math.max(24, n * 0.004);
@@ -460,17 +462,35 @@ function segmentPass(
     }
   }
 
-  // Rank by size, centrality and (dis)favour of touching the frame. A full-frame
-  // component is almost always a leak, so it is heavily discounted.
+  // Rank by size, centrality, border touch, and color separation from bg.
+  // A full-frame component is almost always a leak, so it is heavily discounted.
+  // Also penalize components that touch the frame border (likely background).
   const maxDist = Math.hypot(width, height) / 2;
   const scoreOf = (c: number): number => {
     const af = compArea[c] / n;
-    const sizeScore = af >= 0.9 ? 0.05 : Math.min(1, af / 0.2);
+    const sizeScore = af >= 0.9 ? 0.05 : Math.min(1, af / 0.15);
     const ccx = compSumX[c] / compArea[c];
     const ccy = compSumY[c] / compArea[c];
     const centrality = Math.max(0, 1 - Math.hypot(ccx - width / 2, ccy - height / 2) / maxDist);
     const borderFrac = compArea[c] > 0 ? compBorder[c] / compArea[c] : 1;
-    return 0.5 * sizeScore + 0.3 * centrality + 0.2 * (1 - borderFrac);
+    // Color separation: how different this component is from background model
+    let sepSum = 0;
+    let sepCount = 0;
+    for (let y = compMinY[c]; y <= compMaxY[c] && sepCount < 1000; y++) {
+      for (let x = compMinX[c]; x <= compMaxX[c] && sepCount < 1000; x++) {
+        const i = y * width + x;
+        if (fg[i]) {
+          const p = i * 4;
+          sepSum += bgDistance(rgba[p], rgba[p + 1], rgba[p + 2], bgCenters);
+          sepCount++;
+        }
+      }
+    }
+    const meanSep = sepCount > 0 ? sepSum / sepCount : 0;
+    const sepScore = Math.min(1, meanSep / 80);
+    // Penalize components touching frame border (likely background)
+    const borderPenalty = compBorder[c] > compArea[c] * 0.1 ? 0.3 : 0;
+    return 0.4 * sizeScore + 0.25 * centrality + 0.2 * (1 - borderFrac) + 0.15 * sepScore - borderPenalty;
   };
 
   const keep = new Uint8Array(compCount);
@@ -481,6 +501,13 @@ function segmentPass(
     let big = 0;
     for (let c = 1; c < compCount; c++) if (sizes[c] > sizes[big]) big = c;
     keep[big] = 1;
+  }
+
+  // Build the fg mask BEFORE scoring so scoreOf can access it
+  const fg = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const l = labels[i];
+    fg[i] = l >= 0 && keep[l] ? 1 : 0;
   }
 
   const ranked: number[] = [];
@@ -497,12 +524,6 @@ function segmentPass(
     area: compArea[c],
     score: scoreOf(c),
   }));
-
-  const fg = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    const l = labels[i];
-    fg[i] = l >= 0 && keep[l] ? 1 : 0;
-  }
 
   // Closing (dilate 1 → erode 1) then fill: solid mask, contour unchanged.
   const closedPair = boxErode(boxDilate(fg, width, height, 1), width, height, 1);

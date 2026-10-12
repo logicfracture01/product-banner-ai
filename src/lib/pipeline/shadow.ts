@@ -248,7 +248,9 @@ export function renderShadow(
   return toneMapShadow(renderShadowIntensity(cutout, place, canvasW, canvasH, opts), canvasW, canvasH, opts);
 }
 
-/** Paint the shadow mask onto a destination context as black pixels with alpha. */
+/** Paint the shadow mask onto a destination context as dark shadow with alpha.
+ * Uses a warm dark brown-black for natural-looking shadows instead of pure black.
+ */
 export function paintShadow(
   ctx: CanvasRenderingContext2D,
   mask: Uint8ClampedArray,
@@ -259,9 +261,10 @@ export function paintShadow(
   for (let i = 0; i < w * h; i++) {
     const a = mask[i];
     if (a > 0) {
-      img.data[i * 4] = 24;
-      img.data[i * 4 + 1] = 26;
-      img.data[i * 4 + 2] = 30;
+      // Warm dark shadow color - more natural than pure black
+      img.data[i * 4] = 45;
+      img.data[i * 4 + 1] = 40;
+      img.data[i * 4 + 2] = 35;
       img.data[i * 4 + 3] = a;
     }
   }
