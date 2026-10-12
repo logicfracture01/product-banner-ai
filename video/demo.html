@@ -861,10 +861,20 @@
       <div class="accent"></div>
     </div>
   </section>
+  <section class="stage" id="s11" data-cam="1.00,0,0|1.00,0,0">
+    <div class="scene-bg"></div>
+    <div class="outro-plate">
+      <img class="outro-mark" src="assets/brand/relight-mark.svg" alt="Relight mark" />
+      <div class="outro-title" data-reveal="t>=0.06">Relight</div>
+      <div class="outro-tag" data-reveal="t>=0.20">Cut out. Shape the light. Make it yours.</div>
+      <div class="outro-cta" data-reveal="t>=0.42">Try Relight</div>
+      <div class="outro-cta-sub" data-reveal="t>=0.60">relight.app</div>
+    </div>
+  </section>
 
   <script>
     // Total runtime (seconds). Edit this and the SCENES array together.
-    const TOTAL = 54.0;
+    const TOTAL = 60.0;
     // Scene breakpoints: each scene occupies [start, end). Last scene ends at TOTAL.
     const SCENES = [
       { id: "s1", name: "Intro",        start: 0.00, end: 3.40 },
@@ -877,6 +887,7 @@
       { id: "s8", name: "The app",           start: 40.60, end: 47.00 },
       { id: "s9", name: "Deployment",        start: 47.00, end: 50.60 },
       { id: "s10", name: "Outro",            start: 50.60, end: 54.00 },
+      { id: "s11", name: "Outro plate",       start: 54.00, end: 60.00 },
     ];
 
     if (SCENES.length !== document.querySelectorAll('section.stage').length) {
@@ -943,6 +954,24 @@
     function revealInScene(scene, local, tt) {
       const el = document.getElementById(scene.id);
       if (!el) return;
+
+      // Scene 11: brand outro plate — text reveals keyed to local progress.
+      if (scene.id === "s11") {
+        const plate = el.querySelector(".outro-plate");
+        if (plate) {
+          plate.querySelectorAll("[data-reveal]").forEach((node) => {
+            const expr = node.getAttribute("data-reveal");
+            try {
+              // localize t and local into the expression scope.
+              const show = Function("t", "local", "return " + expr)(tt, local);
+              node.style.opacity = show ? "1" : "0";
+              node.style.transform = show ? "translateY(0)" : "translateY(8px)";
+            } catch (e) {
+              node.style.opacity = "0";
+            }
+          });
+        }
+      }
 
       // Scene 3: workflow steps reveal one at a time.
       if (scene.id === "s3") {

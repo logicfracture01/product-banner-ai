@@ -49,6 +49,8 @@ const PROJECT_ROOT = join(__dirname, "..");
 const DEMO_HTML = join(PROJECT_ROOT, "video", "demo.html");
 const DEFAULT_OUT = join(PROJECT_ROOT, "video", "relight-demo.mp4");
 
+let TOTAL_OVERRIDE = null;
+let AUDIO_FILE = null;
 const TOTAL = 54.0;          // must match demo.html's window.__TOTAL__
 const FPS = 24;
 const W = 1280;
@@ -75,15 +77,24 @@ for (let i = 0; i < args.length; i++) {
   } else if (a === "--out" && args[i + 1] !== undefined) {
     out = args[i + 1];
     i++;
+  } else if (a === "--total" && args[i + 1] !== undefined) {
+    TOTAL_OVERRIDE = parseFloat(args[i + 1]);
+    if (!isFinite(TOTAL_OVERRIDE) || TOTAL_OVERRIDE <= 0) die("--total must be a positive number");
+    i++;
+  } else if (a === "--audio-file" && args[i + 1] !== undefined) {
+    AUDIO_FILE = args[i + 1];
+    i++;
   } else if (a.startsWith("--")) {
     die("Unknown flag: " + a);
   }
 }
 
-if (seconds > TOTAL) die(`--seconds ${seconds} exceeds the timeline TOTAL (${TOTAL}s)`);
+const EFFECTIVE_TOTAL = TOTAL_OVERRIDE != null ? TOTAL_OVERRIDE : TOTAL;
+if (seconds > EFFECTIVE_TOTAL) die(`--seconds ${seconds} exceeds the effective timeline TOTAL (${EFFECTIVE_TOTAL}s)`);
 
 const frameCount = Math.max(1, Math.round(seconds * FPS));
 const lastT = (frameCount - 1) / FPS;
+const AUDIO_TOTAL = EFFECTIVE_TOTAL;
 
 mkdirSync(join(out, ".."), { recursive: true });
 
@@ -105,7 +116,7 @@ function which(cmd) {
   }
 }
 
-function ffmpegArgs(videoOnly = false) {
+function ffmpegArgs(videoOnly = false, audioInputFile = null) {
   const args = [
     "-hide_banner",
     "-y",
@@ -120,12 +131,13 @@ function ffmpegArgs(videoOnly = false) {
     "-video_track_timescale", "24",
   ];
   if (!videoOnly && audio) {
-    args.push(
-      "-ar", "48000",
-      "-ac", "2",
-      "-c:a", "aac",
-      "-b:a", "160k",
-    );
+    if (audioInputFile) {
+      // Audio comes from a file; ffmpeg will read it as a separate input.
+      // (The -i for the file is added by the caller.)
+      args.push("-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", "160k");
+    } else {
+      args.push("-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", "160k");
+    }
   } else {
     args.push("-an");
   }
@@ -387,13 +399,13 @@ async function main() {
     }
   } catch { /* ignore */ }
   if (typeof pageTotalAny === "number" && isFinite(pageTotalAny)) {
-    if (Math.abs(pageTotalAny - TOTAL) > 0.05) {
-      die(`demo.html reports __TOTAL__=${pageTotalAny} but this script expects ${TOTAL}. Edit one of them.`);
+    if (Math.abs(pageTotalAny - EFFECTIVE_TOTAL) > 0.05) {
+      die(`demo.html reports __TOTAL__=${pageTotalAny} but this script expects ${EFFECTIVE_TOTAL}. Use --total ${pageTotalAny} or edit demo.html.`);
     }
   }
 
   console.log(`Rendering ${frameCount} frames @ ${FPS} fps → ${out}`);
-  console.log(`Timeline: 0.00s → ${seconds.toFixed(2)}s of ${TOTAL}s`);
+  console.log(`Timeline: 0.00s → ${seconds.toFixed(2)}s of ${EFFECTIVE_TOTAL}s`);
   console.log(`Audio: ${audio ? "on" : "off"}`);
 
   // Spawn ffmpeg writing the output file. video pipe on fd 0 (stdin), audio
