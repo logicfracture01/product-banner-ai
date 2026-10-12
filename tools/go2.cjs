@@ -1,0 +1,13 @@
+const {chromium}=require('playwright');
+const cwd=process.cwd().replace(/\\/g,'/');
+const b=async()=>{const p=await chromium.launch({channel:'chromium-headless-shell',args:['--no-sandbox','--disable-dev-shm-usage']});
+const r=await p.newPage({viewport:{width:1280,height:900},deviceScaleFactor:1});
+const fetched=[]; const failed=[];
+r.on('response',res=>{if(res.status()>=400){failed.push(res.url().slice(0,90)+':'+res.status());}else if(/\.js$/.test(res.url())) fetched.push(res.url().slice(0,90));});
+await r.goto('file://'+cwd+'/dist/index.html');
+await r.waitForLoadState('domcontentloaded',{timeout:20000});
+await new Promise(res=>setTimeout(res,1200));
+await p.close();
+return {fetched:fetched.length, failed:failed.slice(0,5)};
+};
+b().then(t=>console.log(JSON.stringify(t,null,2))).catch(e=>{console.error(e.message);process.exit(1);});
