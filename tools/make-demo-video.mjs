@@ -414,7 +414,18 @@ async function main() {
   if (!ffmpeg || !existsSync(ffmpeg)) die("ffmpeg not on PATH");
 
   const videoOnly = !audio;
-  const ffmpegArgv = [ffmpeg, ...ffmpegArgs(videoOnly)];
+  const ffmpegArgsArr = ffmpegArgs(videoOnly, AUDIO_FILE);
+  const ffmpegArgv = [ffmpeg, ...ffmpegArgsArr];
+  // Append the output file path (required by ffmpeg).
+  ffmpegArgv.push(out);
+  if (AUDIO_FILE) {
+    // Audio input must come before the output file.
+    const ai = ffmpegArgv.indexOf("-an");
+    if (ai !== -1) {
+      ffmpegArgv.splice(ai, 1);
+    }
+    ffmpegArgv.splice(ffmpegArgv.length - 1, 0, "-i", AUDIO_FILE);
+  }
   const ff = require("child_process").spawn(ffmpegArgv[0], ffmpegArgv.slice(1), {
     stdio: videoOnly
       ? ["pipe", "inherit", "inherit"]
