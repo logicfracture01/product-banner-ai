@@ -70,3 +70,42 @@ and the audio event times all derive from that one table.
 Scenes are positioned by CSS only; add one by copying a `<section class="scene">`
 and giving it a `data-cam="scale,x,y|scale,x,y"` for its zoom/pan, plus a
 matching entry in `SCENES` (the page throws if the two disagree).
+
+## Background-removal approach (what we use and why)
+
+The studio’s built-in segmenter is a small custom pipeline (`src/lib/pipeline/segment.ts`)
+designed to run offline with no model download: a border-ring k-means background model,
+edge-guided flood fill, connected-component selection, and a signed-distance alpha matte.
+For a quick demo that is fine, but for a messy product shot — e.g. the coffee-mug-on-wooden-desk
+case shown in the screenshots — a purpose-built matting model is much more reliable than this
+geometry/colour heuristic.
+
+When the real pipeline is not producing a clean cutout, the practical move is to swap in a
+battle-tested open-source remover rather than keep fighting the custom engine. Two options
+stand out for this project:
+
+- **IMG.LY background removal** — a packaged browser (WebAssembly/WebGPU) and Node solution
+  aimed explicitly at e-commerce/product images. First run is ~40 MB; good first-try fit for
+  product shots, with a larger-quality mode for harder edges.
+  Repo: https://github.com/imgly/background-removal-js
+  Docs: https://img.ly/docs/cesdk/js/edit-image/remove-bg-9dfcf7/
+
+- **RMBG-1.4** via Transformers.js — a general matting model (browser WASM/WebGPU and Node)
+  that includes e-commerce/object imagery in its training, so it is a better fit than
+  portrait-only matting. License note: the model card is non-commercial; commercial use needs
+  a separate agreement with BRIA.
+  Model: https://huggingface.co/briaai/RMBG-1.4
+  Runtime: https://github.com/huggingface/transformers.js
+
+- **rembg-web** — browser ONNX Runtime Web/WASM path with a tiny U²-Netp (~4.7 MB) option
+  plus larger general models. Useful when footprint matters and you want to compare mask
+  quality against a bigger model on the actual desk shots.
+  Repo: https://github.com/bunn-io/rembg-web
+  Docs: https://bunn-io.github.io/rembg-web/
+
+Practical guidance for the cup-on-wooden-desk case:
+- Start with IMG.LY or RMBG-1.4 for the cleanest first-pass cutout on a cluttered backdrop.
+- If keeping the runtime tiny, test rembg-web’s U²-Netp but expect to fall back to a larger
+  model when the background is busy and close in tone to the product.
+- Whichever model you pick, verify the result on a real photo, not only on the procedural
+  laptop scene — the drawn scene is too clean to expose the failure modes that matter here.
