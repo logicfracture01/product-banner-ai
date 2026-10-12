@@ -511,16 +511,7 @@ function segmentPass(
       if (sizes[c] > sizes[big]) big = c;
     }
     keep[big] = 1;
-  }
-  
-  // Build foreground mask before scoring (needed for color separation)
-  const fg = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    const l = labels[i];
-    fg[i] = l >= 0 && keep[l] ? 1 : 0;
-  }
-  
-  // Rank and select candidates
+  }  // Rank and select candidates
   const ranked: number[] = [];
   for (let c = 0; c < compCount; c++) {
     if (keep[c]) ranked.push(c);

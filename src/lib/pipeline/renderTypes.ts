@@ -9,15 +9,11 @@ export interface DetectedFlaw {
   description: string;
 }
 
-export interface PipelineParams {
-  tolerance: number;
-  morphRadius: number;
-  shaveMultiplier: number;
-  shadowOpacity: number;
-  shadowLength: number;
-  shadowDirection: number;
-  placementScale: number;
-  backdropContrast: number;
+export interface DetectedFlaw {
+  type: string;
+  severity: number; // 0..1
+  regions: Array<{ x: number; y: number; w: number; h: number }>;
+  description: string;
 }
 
 export interface RenderResult {
@@ -33,7 +29,15 @@ export interface RenderResult {
 
 export interface RenderedImage {
   result: RenderResult;
-  params: PipelineParams;
+  params: {
+    tolerance: number;
+    morphRadius: number;
+    shaveMultiplier: number;
+    shadowOpacity: number;
+    shadowLength: number;
+    shadowDirection: number;
+    placementScale: number;
+  };
   iteration: number;
   complexityLevel: number;
   mode: 1 | 2;
