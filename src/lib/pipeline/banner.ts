@@ -12,10 +12,6 @@ import { renderShadowIntensity, toneMapShadow, paintShadow, type ShadowOptions }
 import { paintDesign, type GeneratedDesign } from './design';
 import type { PipelineParams, DetectedFlaw } from './renderTypes';
 
-// Pipeline params are now defined in renderTypes.ts
-// These functions are kept for backward compatibility
-export type { PipelineParams, DetectedFlaw } from './renderTypes';
-
 export type BackdropId =
   | 'studio'
   | 'warm'
@@ -217,9 +213,6 @@ export function autoPlacement(cutout: Cutout, W: number, H: number): Placement {
 
 // ----------------------------------------------------------------------------
 // Cutout to canvas (cached)
-// ----------------------------------------------------------------------------
-
-export type { Placement };
 // ----------------------------------------------------------------------------
 
 const cutoutCanvasCache = new Map<Cutout, HTMLCanvasElement>();

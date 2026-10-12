@@ -530,19 +530,19 @@ function segmentPass(
   }));
   
   // Closing + hole filling
-  const closedPair = boxErode(boxDilate(fg, width, height, 1), width, height, 1);
-  const filled = fillHoles(closedPair, width, height);
+  const closedPair = boxErode(boxDilate(opened, width, height, 1), width, height, 1);
+  const filledClosed = fillHoles(closedPair, width, height);
   
   // Handle degenerate case (no foreground found)
   let anyFg = false;
   for (let i = 0; i < n; i++) {
-    if (filled[i]) { anyFg = true; break; }
+    if (filledClosed[i]) { anyFg = true; break; }
   }
-  if (!anyFg) filled.fill(1);
+  if (!anyFg) filledClosed.fill(1);
   
   // SIGNED-DISTANCE ALPHA MATTING
-  const distIn = distanceInside(filled, width, height);
-  const distOut = distanceOutside(filled, width, height);
+  const distIn = distanceInside(filledClosed, width, height);
+  const distOut = distanceOutside(filledClosed, width, height);
   
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;
@@ -555,7 +555,7 @@ function segmentPass(
     alpha[p + 2] = rgba[p + 2];
     
     let a: number;
-    if (filled[i]) {
+    if (filledClosed[i]) {
       a = clamp255(Math.round(255 * Math.min(1, distIn[i] / softRange)));
     } else {
       a = 0;
@@ -625,7 +625,7 @@ function segmentPass(
   let fgPixels = 0;
   let sepSum = 0;
   for (let i = 0; i < n; i++) {
-    if (!filled[i]) continue;
+    if (!filledClosed[i]) continue;
     fgPixels++;
     const p = i * 4;
     sepSum += bgDistance(rgba[p], rgba[p + 1], rgba[p + 2], bgCenters);

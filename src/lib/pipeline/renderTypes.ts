@@ -54,6 +54,30 @@ export interface AdaptiveFix {
   reason: string;
 }
 
+// Pipeline parameters (mirrored by banner.ts / iterativeRender.ts)
+export interface PipelineParams {
+  tolerance: number;
+  morphRadius: number;
+  shaveMultiplier: number;
+  shadowOpacity: number;
+  shadowLength: number;
+  shadowDirection: number;
+  placementScale: number;
+  backdropContrast?: number;
+}
+
+// Pipeline parameters
+export interface PipelineParams {
+  tolerance: number;
+  morphRadius: number;
+  shaveMultiplier: number;
+  shadowOpacity: number;
+  shadowLength: number;
+  shadowDirection: number;
+  placementScale: number;
+  backdropContrast?: number;
+}
+
 // Flaw types
 export type FlawType =
   | 'background_bleed'
