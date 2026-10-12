@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 322 104">
+  <rect x="0" y="0" width="322" height="104" rx="12" fill="#20242D" stroke="#343B46" stroke-width="1"/>
+  <text x="18" y="40" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#798390">02</text>
+  <text x="18" y="66" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="600" fill="#F3F5F7">Matte</text>
+  <text x="18" y="86" font-family="Inter, Arial, sans-serif" font-size="13" fill="#A7AFBB">Refine the cutout</text>
+  <g transform="translate(240 30)">
+    <rect x="4" y="4" width="36" height="36" rx="6" fill="#1A1D24" stroke="#798390" stroke-width="2"/>
+    <path d="M12 12 L22 22 L32 12" fill="none" stroke="#35D6C0" stroke-width="2"/>
+  </g>
+</svg>

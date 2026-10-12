@@ -1,0 +1,26 @@
+asset_path,media_type,source,source_url,license,attribution_required,download_date,notes
+video/assets/brand/relight-wordmark.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,wordmark with teal aperture mark; friendly for dark theme
+video/assets/brand/relight-mark.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,standalone teal aperture/light mark
+video/assets/ui/cursor.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,custom pointer + click ring
+video/assets/ui/icons/detect.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,detect step icon
+video/assets/ui/icons/matte.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,matte step icon
+video/assets/ui/icons/plan.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,plan step icon
+video/assets/ui/icons/assemble.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,assemble/enhance step icon
+video/assets/ui/icons/light.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,light source icon
+video/assets/ui/icons/background.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,background swatch icon
+video/assets/ui/workflow-cards/01_detect.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,workflow card 1
+video/assets/ui/workflow-cards/02_matte.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,workflow card 2
+video/assets/ui/workflow-cards/03_plan.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,workflow card 3
+video/assets/ui/workflow-cards/04_assemble.svg,vector,in-house (generated per plan),,CC0 / project owned,no,generated,workflow card 4
+video/assets/backgrounds/studio_bg_warm.png,image,in-house (generated per plan),,CC0 / project owned,no,generated,warm sand gradient #D8C6AA -> #B99D7E
+video/assets/backgrounds/studio_bg_charcoal.png,image,in-house (generated per plan),,CC0 / project owned,no,generated,charcoal gradient #454A50 -> #252A31
+video/assets/backgrounds/studio_bg_tealgray.png,image,in-house (generated per plan),,CC0 / project owned,no,generated,teal-gray gradient #7D9A95 -> #384B4B
+video/assets/textures/grain_1080p.png,image,in-house (generated per plan),,CC0 / project owned,no,generated,monochrome grain proxy, 1920x1080 rgba
+video/assets/textures/teal_bloom.png,image,in-house (generated per plan),,CC0 / project owned,no,generated,soft radial teal bloom, 1920x1080 rgba
+video/assets/stills/mug_desk_before.tif,image,REQUIRED: shoot or commission,,PHOTOGRAPHER/PROPERTY/LOCATION RELEASE REQUIRED,applicable,PENDING,original high-res product photo; mug + wood desk + 2 film rolls + soft natural light
+video/assets/stills/mug_cutout_alpha.png,image,REQUIRED: derive from mug_desk_before.tif,,depends on source,applicable,PENDING,transparent PNG/TIFF of same mug + props, refined handle/rim
+video/assets/stills/mug_after_warm.png,image,REQUIRED: composite from mug_cutout_alpha.png + studio_bg_warm.png,,depends on source,applicable,PENDING,composite on warm neutral studio bg, soft key upper-right, cool fill, contact shadow
+video/assets/stills/mug_after_neutral.png,image,REQUIRED: composite from mug_cutout_alpha.png + studio_bg_charcoal.png,,depends on source,applicable,PENDING,composite on charcoal/gray bg
+video/assets/fonts/Inter/,font,Google Fonts,,open-source license per font (retain license file),verify per file,PENDING,Inter Medium/Semibold for UI + captions; URL https://developers.google.com/fonts
+video/audio/music/,audio,REQUIRED: YouTube Audio Library or equivalent,,verify per track,verify per track,PENDING,60s instrumental electronic bed; no vocals
+video/audio/sfx/,audio,REQUIRED: free SFX source or commissioned,,verify per file,verify per file,PENDING,UI pops, whoosh, click, light drag sweep, reveal whoosh, end chime, CTA pop

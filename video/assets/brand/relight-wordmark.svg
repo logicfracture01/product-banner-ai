@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120">
+  <defs>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#35D6C0"/>
+      <stop offset="1" stop-color="#8AF0DF"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#35D6C0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="56" cy="60" r="30"/>
+    <path d="M40 60 L56 38 L72 60 L56 82 Z" fill="#35D6C0"/>
+    <circle cx="56" cy="60" r="11" fill="#1A1D24"/>
+    <circle cx="56" cy="60" r="4" fill="#8AF0DF"/>
+  </g>
+  <text x="100" y="74" font-family="Inter, Arial, sans-serif" font-size="62" font-weight="600" fill="#F3F5F7" letter-spacing="1">Relight</text>
+</svg>
