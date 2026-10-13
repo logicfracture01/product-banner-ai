@@ -2,12 +2,11 @@ import { motion } from "framer-motion";
 import { Link } from "react-router";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
-import { ArrowRight, Check, Grid3X3, MousePointer2, RotateCcw, ZoomIn } from "lucide-react";
+import { ArrowRight, Check } from "lucide-react";
 import { BeforeAfterComparison } from "@/components/BeforeAfterComparison";
 
 const BEFORE_IMAGE = "/before-messy.jpg";
 const AFTER_IMAGE = "/after-clean.jpg";
-// If you want the real photos here, replace these paths with the actual image files in public/.
 
 
 const fadeUp = {
@@ -308,9 +307,6 @@ function Modes() {
             <div className="mt-5 flex flex-wrap gap-3">
               {[
                 "Drag, paste, or upload",
-                "3D product preview",
-                "5 output styles",
-                "Full-res PNG export",
               ].map((chip) => (
                 <div key={chip} className="flex items-center gap-2 rounded-full border border-border/70 bg-card px-3.5 py-1.5 text-xs text-muted-foreground shadow-e1">
                   <Check className="size-3.5 shrink-0 text-brand" />
@@ -381,11 +377,10 @@ function BeforeAfter() {
             after={AFTER_IMAGE}
             size="lg"
           />
-        </motion.div>
-
-        <p className="mt-5 text-sm text-muted-foreground text-center">
-          Drag the handle to compare. The before is a real phone photo of a white and red sneaker on a cluttered wooden floor. The after is what the studio produces from it — one click, one cutout, one export.
+        </motion.div>          <p className="mt-5 text-sm text-muted-foreground text-center">
+          Drag the handle to compare.
         </p>
+
       </div>
     </section>
   );
