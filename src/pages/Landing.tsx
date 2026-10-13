@@ -368,15 +368,13 @@ function BeforeAfter() {
           <div className="aspect-[4/5] w-full overflow-hidden rounded-xl bg-muted/60">
             <img
               src="https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800"
-              alt="A messy phone photo of a product on a cluttered background"
+              alt="Before — a cluttered phone photo of a white and red athletic sneaker on a messy wooden floor with fabric, cable, socks, cereal crumbs, and dust"
               className="h-full w-full object-cover"
               loading="lazy"
             />
           </div>
-        </motion.div>
-
-        <p className="mt-5 text-sm text-muted-foreground text-center">
-          The before is a real phone photo. The after is what the studio produces from it — one click, one cutout, one export.
+        </motion.div>          <p className="mt-5 text-sm text-muted-foreground text-center">
+          The before is a real phone photo of a white and red sneaker on a cluttered wooden floor. The after is what the studio produces from it — one click, one cutout, one export.
         </p>
       </div>
     </section>
