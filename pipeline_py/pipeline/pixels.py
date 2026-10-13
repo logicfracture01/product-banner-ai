@@ -55,7 +55,24 @@ def clamp255(v: Union[float, List[float]]) -> Union[int, List[int]]:
 
 
 def _clamp_each_byte(source: Any, w: int, h: int) -> List[bytes]:
-    return [b"x"]
+    if not isinstance(source, Sequence) or w <= 0 or h <= 0:
+        return []
+    n = w * h
+    out: List[bytes] = []
+    for y in range(h):
+        row: List[int] = []
+        for x in range(w):
+            i = y * w + x
+            if i < 0 or i >= len(source):
+                raise IndexError(f"index {i} out of range")
+            v = source[i]
+            if isinstance(v, (list, tuple)):
+                val = int(v[0]) if len(v) > 0 else 0
+            else:
+                val = int(v)
+            row.append(max(0, min(255, val)))
+        out.append(bytes(row))
+    return out
 
 
 

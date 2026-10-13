@@ -38,6 +38,7 @@ from .styles import (
     get_style,
     recommend_styles,
     segment_and_analyze,
+    segment,
 )
 
 
@@ -50,6 +51,8 @@ def _rgba_rectangle(
     bg_color: Tuple[int, int, int] = (235, 235, 235),
     softness: float = 0.0,
 ) -> bytes:
+    if width == 0 or height == 0:
+        return b''
     buf = bytearray(width * height * 4)
     x0, y0, w, h = fg_box["x"], fg_box["y"], fg_box["w"], fg_box["h"]
     for y in range(height):

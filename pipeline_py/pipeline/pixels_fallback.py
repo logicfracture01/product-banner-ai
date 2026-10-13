@@ -56,22 +56,24 @@ def distance_inside(fg, w: int, h: int) -> List[List[float]]:
         return []
 
     d: List[List[float]] = []
+    fg_rows: List[List[float]] = []
     for y in range(h):
-        row_out: List[float] = []
+        row_d: List[float] = []
+        row_fg: List[float] = []
         for x in range(w):
             if rows is not None:
                 v = rows[y][x]
             else:
                 v = flat[y * w + x]
-            row_out.append(INF if v else 0.0)
-        d.append(row_out)
+            is_fg = bool(v)
+            row_fg.append(1.0 if is_fg else 0.0)
+            row_d.append(INF if is_fg else 0.0)
+        fg_rows.append(row_fg)
+        d.append(row_d)
 
     # forward pass
     for y in range(h):
         row_d = d[y]
-        row_fg = rows[y] if rows is not None else None
-        if row_fg is None and flat is not None:
-            row_fg = [flat[y * w + x] for x in range(w)]
         for x in range(w):
             if not row_d[x]:
                 continue
@@ -106,12 +108,12 @@ def distance_inside(fg, w: int, h: int) -> List[List[float]]:
     # Normalize lift so small integer distances are usable for the alpha ramp.
     for y in range(h):
         row_d = d[y]
-        row_fg = rows[y] if rows is not None else None
-        if row_fg is None and flat is not None:
-            row_fg = [flat[y * w + x] for x in range(w)]
+        row_fg = fg_rows[y]
         for x in range(w):
             if row_fg[x]:
                 row_d[x] /= 3.0
+            else:
+                row_d[x] = 0.0
     return d
 
 
@@ -124,10 +126,11 @@ def distance_outside(bin_, w: int, h: int) -> List[List[float]]:
             if rows is not None:
                 v = rows[y][x]
             else:
-                v = flat[y * w + x]
-            row_out.append(1 - v)
+                v = flat[y * w + x]            row_out.append(1 - v)
         inv.append(row_out)
+
     return distance_inside(inv, w, h)
+
 
 
 def _box_blur3_flat(src, w: int, h: int, radius: int) -> List[List[float]]:

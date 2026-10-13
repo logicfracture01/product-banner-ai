@@ -318,15 +318,26 @@ def _segment_numpy(
     if int(filled.sum()) == 0:
         filled[...] = 1
 
-    dist_in = px.distance_inside(filled.ravel().tolist(), w, h)
-    dist_out = px.distance_outside(filled.ravel().tolist(), w, h)
-    dist_in = np.array(dist_in, dtype=np.float32).reshape((h, w))
-    dist_out = np.array(dist_out, dtype=np.float32).reshape((h, w))
+    filled_list = filled.ravel().tolist()
+    dist_in = px.distance_inside(filled_list, w, h)
+    dist_out = px.distance_outside(filled_list, w, h)
+    if isinstance(dist_in, list):
+        dist_in = np.array(dist_in, dtype=np.float32)
+    else:
+        dist_in = np.asarray(dist_in, dtype=np.float32)
+    if dist_in.ndim == 1:
+        dist_in = dist_in.reshape((h, w))
+    if isinstance(dist_out, list):
+        dist_out = np.array(dist_out, dtype=np.float32)
+    else:
+        dist_out = np.asarray(dist_out, dtype=np.float32)
+    if dist_out.ndim == 1:
+        dist_out = dist_out.reshape((h, w))
 
     soft_range = max(0.5, softness)
     alpha = np.zeros((h, w, 4), dtype=np.float32)
     alpha[..., 0:3] = rgba[..., 0:3]
-    alpha_mask = filled
+    alpha_mask = filled > 0
     a = np.where(
         alpha_mask,
         np.clip(np.round(255.0 * np.minimum(1.0, dist_in / soft_range)), 0, 255),
