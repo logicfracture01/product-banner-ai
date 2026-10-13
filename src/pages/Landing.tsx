@@ -365,9 +365,11 @@ function BeforeAfter() {
           <BeforeAfterComparison
             before={BEFORE_IMAGE}
             after={AFTER_IMAGE}
-            size="lg"
+            size={360}
           />
-        </motion.div>          <p className="mt-5 text-sm text-muted-foreground text-center">
+        </motion.div>
+
+        <p className="mt-5 text-sm text-muted-foreground text-center">
           Drag the handle to compare.
         </p>
 
