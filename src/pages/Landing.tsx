@@ -3,10 +3,10 @@ import { Link } from "react-router";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
 import { ArrowRight, Check, Grid3X3, MousePointer2, RotateCcw, ZoomIn } from "lucide-react";
-import BeforeAfterStage from "@/components/BeforeAfterStage";
+import { BeforeAfterComparison } from "@/components/BeforeAfterComparison";
 
-const BEFORE_IMAGE = "https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800";
-const AFTER_IMAGE = "https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800";
+const BEFORE_IMAGE = "/before-messy.jpg";
+const AFTER_IMAGE = "/after-clean.jpg";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
@@ -169,7 +169,11 @@ function Hero() {
           transition={{ delay: 0.25 }}
           className="shrink-0"
         >
-          <BeforeAfterStage size={220} />
+          <BeforeAfterComparison
+            before={BEFORE_IMAGE}
+            after={AFTER_IMAGE}
+            size={220}
+          />
           <p className="mt-5 text-center text-xs text-muted-foreground">
             Messy photo in, clean banner out — drag the divider to compare.
           </p>
@@ -323,7 +327,11 @@ function Modes() {
             className="relative"
           >
             <div className="rounded-xl border border-border/70 bg-[#0c0e10] p-2 shadow-e3">
-              <BeforeAfterStage size={280} />
+              <BeforeAfterComparison
+                before={BEFORE_IMAGE}
+                after={AFTER_IMAGE}
+                size={280}
+              />
             </div>
             <p className="mt-3 text-xs text-muted-foreground">Drag the divider to compare — cleaned result on the right, original mess on the left.</p>
           </motion.div>
@@ -366,7 +374,11 @@ function BeforeAfter() {
           transition={{ delay: 0.2 }}
           className="mt-8 w-full max-w-3xl mx-auto"
         >
-          <BeforeAfterStage size={220} />
+          <BeforeAfterComparison
+            before={BEFORE_IMAGE}
+            after={AFTER_IMAGE}
+            size="lg"
+          />
         </motion.div>
 
         <p className="mt-5 text-sm text-muted-foreground text-center">
