@@ -1,6 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router";
-import ProductStage from "@/components/ProductStage";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
@@ -17,6 +16,9 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
+import BeforeAfterStage from "@/components/BeforeAfterStage";
+import { Slider } from "@/components/ui/slider";
 
 const RATIOS = [
   { id: "1:1", label: "Square", w: 1080, h: 1080 },
@@ -44,6 +46,7 @@ export default function Studio() {
   const [shadowLength, setShadowLength] = useState(40);
   const [shadowSoftness, setShadowSoftness] = useState(60);
   const [shadowStrength, setShadowStrength] = useState(45);
+
   const [productUrl, setProductUrl] = useState<string | null>(null);
   const [beforeUrl, setBeforeUrl] = useState<string | null>(null);
   const [view, setView] = useState<"compose" | "preview">("compose");
@@ -313,11 +316,12 @@ export default function Studio() {
                         </span>
                       </div>
                     )}
-                    <ProductStage
+                    <BeforeAfterStage
                       productImage={productUrl}
-                      rotation={view === "preview" ? "spin" : "float"}
+                      rotation={view === "preview" ? "none" : "orbit"}
                       size={view === "preview" ? 420 : 360}
                       showGround
+                      className={view === "preview" ? "ring-2 ring-brand/40" : ""}
                     />
                     <div className="absolute left-3 top-3 z-10 flex gap-2">
                       <span className="rounded-md bg-black/40 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-sm">
@@ -328,38 +332,26 @@ export default function Studio() {
                       </span>
                     </div>
                     <button
-                      onClick={() => setView(view === "preview" ? "compose" : "preview")}
+                      onClick={() => setView(view === "compose" ? "preview" : "compose")}
                       className="absolute right-3 top-3 z-10 rounded-full border border-border/70 bg-card/80 px-2.5 py-1 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
                     >
-                      {view === "preview" ? "Compose" : "Inspect"}
+                      {view === "preview" ? "Inspect" : "Compare"}
                     </button>
                   </div>
 
-                  {/* before snapshot */}
+                  {/* before/after comparison */}
                   {beforeUrl && (
-                    <div className="flex gap-3">
-                      <div className="relative flex-1 overflow-hidden rounded-xl bg-muted/40">
-                        <img
-                          src={beforeUrl}
-                          alt="Your uploaded photo"
-                          className="h-full w-full object-cover"
-                          draggable={false}
-                        />
-                        <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/50 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm">
-                          Before
-                        </span>
-                      </div>
-                      <div className="relative flex-1 overflow-hidden rounded-xl bg-card">
-                        <img
-                          src={productUrl || ""}
-                          alt="Product preview"
-                          className="h-full w-full object-cover"
-                          draggable={false}
-                        />
-                        <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-brand/80 px-2 py-0.5 text-[11px] font-medium text-white-foreground backdrop-blur-sm">
-                          Ready
-                        </span>
-                      </div>
+                    <div className="w-full">
+                      <BeforeAfterSlider
+                        before={beforeUrl}
+                        after={productUrl || ""}
+                        initialPercent={50}
+                        labels
+                        className="aspect-[4/5]"
+                      />
+                      <p className="mt-2 text-[11px] text-muted-foreground text-center">
+                        Drag the divider to compare the original photo with the cleaned product.
+                      </p>
                     </div>
                   )}
 
@@ -367,7 +359,7 @@ export default function Studio() {
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       onClick={exportBanner}
-                      disabled={exporting}
+                      disabled={exporting || !productUrl}
                       className="flex h-10 items-center gap-2 rounded-lg bg-brand px-5 text-sm font-medium text-brand-foreground shadow-e2 transition-transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {exporting ? (
@@ -485,22 +477,21 @@ export default function Studio() {
               </fieldset>
 
               <fieldset>
-                <legend className="text-xs text-muted-foreground">3D preview</legend>
+                <legend className="text-xs text-muted-foreground">Compare mode</legend>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Drag the preview to inspect the product from any angle. In compose mode it floats; in inspect mode it spins.
+                  In compare mode, the divider sits over the product so you can see the original and the cleaned version side by side. Drag to reposition the split.
                 </p>
                 <div className="mt-3 flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   <svg className="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 3 13 15 19 9" />
+                  <path d="M8 7 3 12l5 5" />
+                  <path d="M16 7l5 5-5 5" />
                 </svg>
-                  <span>Drag to orbit · scroll nothing (static stage)</span>
+                  <span>Drag the divider in the preview above to compare.</span>
                 </div>
-              </fieldset>
-
-              <div className="flex items-center gap-2 rounded-lg bg-brand/10 px-3 py-2 text-xs text-brand-foreground">
-                <Check className="size-3.5 shrink-0" />
-                Open to everyone — no sign-up, no uploads.
-              </div>
+              </fieldset>                <div className="flex items-center gap-2 rounded-lg bg-brand/10 px-3 py-2 text-xs text-brand-foreground">
+                  <Check className="size-3.5 shrink-0" />
+                  Open to everyone — no sign-up, no uploads. Compare side-by-side with the divider.
+                </div>
             </div>
 
             <div className="rounded-xl border border-border/70 bg-card p-5 shadow-e1 space-y-4">
@@ -546,38 +537,3 @@ export default function Studio() {
   );
 }
 
-function Slider({
-  label,
-  min,
-  max,
-  value,
-  setValue,
-}: {
-  label: string;
-  min: number;
-  max: number;
-  value: number;
-  setValue: (v: number) => void;
-}) {
-  const pct = ((value - min) / (max - min)) * 100;
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium tabular-nums text-foreground">{value}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => setValue(Number(e.target.value))}
-        className="h-1.5 w-full appearance-none rounded-full bg-muted/60 cursor-pointer accent-brand"
-      />
-      <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>{min}</span>
-        <span>{max}</span>
-      </div>
-    </div>
-  );
-}

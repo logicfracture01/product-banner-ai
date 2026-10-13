@@ -1,35 +1,49 @@
 import { Moon, Sun } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
 
-/** Light/dark switch — minimal, no emojis, no decorative icons beyond moon/sun. */
+/** Theme switch — plain segmented control, no spinning, no shrinking, no hidden button chrome. */
 export function ThemeToggle({ className }: { className?: string }) {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
 
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={toggleTheme}
-      aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-      className={cn("relative size-8 w-8 overflow-hidden px-0", className)}
+    <div
+      className={cn(
+        "flex size-7 items-center rounded-full border border-border/70 bg-card shadow-e1 overflow-hidden",
+        className,
+      )}
+      role="group"
+      aria-label="Theme"
     >
-      <span className="relative block size-4">
-        <Sun
-          className={cn(
-            "absolute inset-0 size-4 transition-all duration-300",
-            theme === "dark" ? "rotate-90 scale-0 opacity-0" : "rotate-0 scale-100 opacity-100",
-          )}
-        />
-        <Moon
-          className={cn(
-            "absolute inset-0 size-4 transition-all duration-300",
-            theme === "dark" ? "rotate-0 scale-100 opacity-100" : "-rotate-90 scale-0 opacity-0",
-          )}
-        />
-      </span>
-    </Button>
+      <button
+        type="button"
+        onClick={() => setTheme("light")}
+        className={cn(
+          "flex size-full items-center justify-center transition-colors",
+          theme === "light"
+            ? "bg-brand text-brand-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+        aria-pressed={theme === "light"}
+        aria-label="Light theme"
+      >
+        <Sun className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setTheme("dark")}
+        className={cn(
+          "flex size-full items-center justify-center transition-colors",
+          theme === "dark"
+            ? "bg-brand text-brand-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+        aria-pressed={theme === "dark"}
+        aria-label="Dark theme"
+      >
+        <Moon className="size-3.5" />
+      </button>
+    </div>
   );
 }

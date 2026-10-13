@@ -1,9 +1,12 @@
 import { motion } from "framer-motion";
 import { Link } from "react-router";
-import ProductStage from "@/components/ProductStage";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
 import { ArrowRight, Check, Grid3X3, MousePointer2, RotateCcw, ZoomIn } from "lucide-react";
+import BeforeAfterStage from "@/components/BeforeAfterStage";
+
+const BEFORE_IMAGE = "https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800";
+const AFTER_IMAGE = "https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
@@ -166,11 +169,9 @@ function Hero() {
           transition={{ delay: 0.25 }}
           className="shrink-0"
         >
-          <div className="mx-auto max-w-[220px]">
-            <ProductStage rotation="float" size={220} />
-          </div>
+          <BeforeAfterStage size={220} />
           <p className="mt-5 text-center text-xs text-muted-foreground">
-            Live 3D preview — drag to inspect
+            Messy photo in, clean banner out — drag the divider to compare.
           </p>
         </motion.div>
       </div>
@@ -322,9 +323,9 @@ function Modes() {
             className="relative"
           >
             <div className="rounded-xl border border-border/70 bg-[#0c0e10] p-2 shadow-e3">
-              <ProductStage rotation="spin" size={280} showGround={false} />
+              <BeforeAfterStage size={280} />
             </div>
-            <p className="mt-3 text-xs text-muted-foreground">Drag the preview to inspect — spun for the landing, floating in the studio.</p>
+            <p className="mt-3 text-xs text-muted-foreground">Drag the divider to compare — cleaned result on the right, original mess on the left.</p>
           </motion.div>
         </div>
       </div>
@@ -363,18 +364,13 @@ function BeforeAfter() {
           whileInView="visible"
           viewport={{ once: true, margin: "-40px" }}
           transition={{ delay: 0.2 }}
-          className="mt-8 rounded-xl border border-border/70 bg-muted/40 p-2 shadow-e2"
+          className="mt-8 w-full max-w-3xl mx-auto"
         >
-          <div className="aspect-[4/5] w-full overflow-hidden rounded-xl bg-muted/60">
-            <img
-              src="https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800"
-              alt="Before — a cluttered phone photo of a white and red athletic sneaker on a messy wooden floor with fabric, cable, socks, cereal crumbs, and dust"
-              className="h-full w-full object-cover"
-              loading="lazy"
-            />
-          </div>
-        </motion.div>          <p className="mt-5 text-sm text-muted-foreground text-center">
-          The before is a real phone photo of a white and red sneaker on a cluttered wooden floor. The after is what the studio produces from it — one click, one cutout, one export.
+          <BeforeAfterStage size={220} />
+        </motion.div>
+
+        <p className="mt-5 text-sm text-muted-foreground text-center">
+          Drag the handle to compare. The before is a real phone photo of a white and red sneaker on a cluttered wooden floor. The after is what the studio produces from it — one click, one cutout, one export.
         </p>
       </div>
     </section>
