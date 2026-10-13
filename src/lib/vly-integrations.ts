@@ -1,9 +1,2 @@
-// VLY Integrations Configuration
-// See /integrations.md for usage documentation
-
-import { createVlyIntegrations } from '@vly-ai/integrations';
-
-export const vly = createVlyIntegrations({
-  deploymentToken: process.env.VLY_INTEGRATION_KEY!,
-  debug: process.env.NODE_ENV === 'development'
-});
+// Removed: VLY integrations integration is no longer used by this app.
+// The plugin was stripped from vite.config.ts and no app code imports this module.
