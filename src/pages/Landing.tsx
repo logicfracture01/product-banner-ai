@@ -304,16 +304,6 @@ function Modes() {
               The studio keeps the controls close: backdrop, ratio, shadow angle, softness,
               and a generative scene matched to your product. Move one slider, see the change.
             </p>
-            <div className="mt-5 flex flex-wrap gap-3">
-              {[
-                "Drag, paste, or upload",
-              ].map((chip) => (
-                <div key={chip} className="flex items-center gap-2 rounded-full border border-border/70 bg-card px-3.5 py-1.5 text-xs text-muted-foreground shadow-e1">
-                  <Check className="size-3.5 shrink-0 text-brand" />
-                  {chip}
-                </div>
-              ))}
-            </div>
           </motion.div>
 
           <motion.div
