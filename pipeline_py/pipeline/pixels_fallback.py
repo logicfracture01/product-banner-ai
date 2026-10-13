@@ -126,11 +126,10 @@ def distance_outside(bin_, w: int, h: int) -> List[List[float]]:
             if rows is not None:
                 v = rows[y][x]
             else:
-                v = flat[y * w + x]            row_out.append(1 - v)
+                v = flat[y * w + x]
+            row_out.append(1 - v)
         inv.append(row_out)
-
     return distance_inside(inv, w, h)
-
 
 
 def _box_blur3_flat(src, w: int, h: int, radius: int) -> List[List[float]]:

@@ -287,10 +287,55 @@ def _box_blur3(src: List[float], w: int, h: int, radius: int) -> List[float]:
 
 
 def _distance_inside(src: List[int], w: int, h: int) -> List[float]:
-    from .pixels import distance_inside
-    return distance_inside(src, w, h)
+    # segmentation and shadow engines pass a flat 1-D mask and index the result as d[i];
+    # keep the same semantics as pixels_fallback.distance_inside for a flat list.
+    if h == 0 or w == 0:
+        return []
+    INF = 1e9
+    d = [INF if src[i] else 0.0 for i in range(w * h)]
+
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            if not d[i]:
+                continue
+            m = d[i]
+            if x > 0:
+                m = min(m, d[i - 1] + 3.0)
+            if y > 0:
+                m = min(m, d[i - w] + 3.0)
+            if x > 0 and y > 0:
+                m = min(m, d[i - w - 1] + 4.0)
+            if x < w - 1 and y > 0:
+                m = min(m, d[i - w + 1] + 4.0)
+            d[i] = m
+
+    for y in range(h - 1, -1, -1):
+        for x in range(w - 1, -1, -1):
+            i = y * w + x
+            if not d[i]:
+                continue
+            m = d[i]
+            if x < w - 1:
+                m = min(m, d[i + 1] + 3.0)
+            if y < h - 1:
+                m = min(m, d[i + w] + 3.0)
+            if x < w - 1 and y < h - 1:
+                m = min(m, d[i + w + 1] + 4.0)
+            if x > 0 and y < h - 1:
+                m = min(m, d[i + w - 1] + 4.0)
+            d[i] = m
+
+    for i in range(w * h):
+        if src[i]:
+            d[i] /= 3.0
+        else:
+            d[i] = 0.0
+    return d
 
 
 def _distance_outside(bin_: List[int], w: int, h: int) -> List[float]:
-    from .pixels import distance_outside
-    return distance_outside(bin_, w, h)
+    # distance outside a binary mask, expressed as a flat 1-D list so it matches the
+    # same indexing contract as _distance_inside.
+    inv = [0 if v else 1 for v in bin_]
+    return _distance_inside(inv, w, h)

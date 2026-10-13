@@ -104,8 +104,8 @@ def test_distance_inside_flat_fills() -> None:
     fg: List[int] = [0 for _ in range(w * h)]
     fg[12] = 1
     d = distance_inside(fg, w, h)
-    assert d[2][2] > 0
-    assert d[0][0] == 0.0
+    assert d[2 * w + 2] > 0
+    assert d[0] == 0.0
 
 
 def test_distance_outside_inverts() -> None:
@@ -122,11 +122,17 @@ def test_distance_outside_flat_inverts() -> None:
     fg: List[int] = [1 for _ in range(w * h)]
     fg[12] = 0
     d_out = distance_outside(fg, w, h)
+    # pixels_fallback.distance_outside always returns list-of-lists, even for a
+    # flat input, so index with [row][col].
+    assert isinstance(d_out, (list, tuple))
+    assert len(d_out) == h
+    assert isinstance(d_out[0], (list, tuple))
+    assert len(d_out[0]) == w
     assert d_out[2][2] > 0
     assert d_out[0][0] == 0.0
 
 
-def test_distance_outside_inverts() -> None:
+def test_distance_outside_second_inverts() -> None:
     w, h = 5, 5
     fg: List[List[int]] = [[1 for _ in range(w)] for _ in range(h)]
     fg[2][2] = 0
