@@ -719,30 +719,69 @@ export default function Studio() {
     }
     drawProduct(ctx, cutout, place);
     exportBanner(cv, `relight-${id}`);
-  };
-
-  // Batch export: renders and downloads every one of the 5 output styles at
-  // full quality, so a seller can pick the best look offline afterwards.
-  // Downloads are staggered 350 ms apart — browsers silently drop rapid
-  // successive downloads, and the stagger also keeps the main thread free
-  // enough for the progress UI to stay responsive.
-  const [exportingAll, setExportingAll] = useState(false);
-  const exportAllStyles = async () => {
-    if (exportingAll) return; // guard against double-clicks
-    setExportingAll(true);
-    try {
-      // staggered so the browser doesn't block multiple downloads
-      for (const s of OUTPUT_STYLES) {
-        exportStyle(s.id);
-        await new Promise((r) => setTimeout(r, 350));
+  };  // Batch export: renders and downloads every one of the 5 output styles at
+    // full quality, so a seller can pick the best look offline afterwards.
+    // Downloads are staggered 350 ms apart — browsers silently drop rapid
+    // successive downloads, and the stagger also keeps the main thread free
+    // enough for the progress UI to stay responsive.
+    const [exportingAll, setExportingAll] = useState(false);
+    const exportAllStyles = async () => {
+      if (exportingAll) return; // guard against double-clicks
+      setExportingAll(true);
+      try {
+        // staggered so the browser doesn't block multiple downloads
+        for (const s of OUTPUT_STYLES) {
+          exportStyle(s.id);
+          await new Promise((r) => setTimeout(r, 350));
+        }
+      } finally {
+        setExportingAll(false);
       }
-    } finally {
-      setExportingAll(false);
-    }
-  };
+    };
 
-  return (
-    <div className="min-h-screen bg-background text-foreground">
+    // Render the current look at full export resolution (no JPEG preview
+    // artifacts) onto the main canvas.
+    const renderFullQuality = () => {
+      const cutout = cutoutRef.current;
+      const canvas = canvasRef.current;
+      if (!cutout || !canvas) return null;
+      const r = getRatio(ratio);
+      canvas.width = r.w;
+      canvas.height = r.h;
+      const ctx = canvas.getContext("2d")!;
+      const place = placeFor(cutout, ratio);
+      ctx.clearRect(0, 0, r.w, r.h);
+      if (design) {
+        paintDesign(ctx, r.w, r.h, design);
+      } else {
+        drawBackdrop(ctx, r.w, r.h, backdrop);
+      }
+      if (shadowsOn) {
+        const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
+        paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
+      }
+      drawProduct(ctx, cutout, place);
+      return canvas;
+    };
+
+    // Download the current look as a full-resolution PNG.
+    const exportCurrentLook = () => {
+      const canvas = renderFullQuality();
+      if (!canvas) return;
+      const r = getRatio(ratio);
+      exportBanner(canvas, `relight-current-${style}`);
+    };
+
+    // Change ratio and keep the preview in sync.
+    const cycleRatio = () => {
+      setRatio((r) => {
+        const list = RATIOS.map((x) => x.id);
+        const idx = list.indexOf(r);
+        return list[(idx + 1) % list.length];
+      });
+    };
+
+  return (  <div className="min-h-screen bg-background text-foreground">
       <a
         href="#studio-controls"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
@@ -762,15 +801,15 @@ export default function Studio() {
           {aiProgress !== null
             ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…)" : ""}`
             : "— first run downloads ~60 MB, then cached"}
-          <span className="text-muted-foreground">· runs in background, app stays usable</span>
-        </div>
+          <span className="text-muted-foreground">· runs in background, app stays usable</span>        </div>
+      
       )}
       {/* Stage-1 object detection result (what the detector thinks the subject is) */}
       {detection && (
         <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
           <Sparkles className="size-3.5 text-primary" />
-          Main object: {detection.label} · {Math.round(detection.confidence * 100)}%
-        </div>
+          Main object: {detection.label} · {Math.round(detection.confidence * 100)}%        </div>
+      
       )}
       {aiState === "failed" && (
         <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-2 text-xs font-medium text-[#7a5a14] shadow-lg">
@@ -786,8 +825,8 @@ export default function Studio() {
             className="underline decoration-dotted underline-offset-2 hover:text-[#5c430d]"
           >
             retry
-          </button>
-        </div>
+          </button>        </div>
+      
       )}
       <p aria-live="polite" className="sr-only">
         {stage === "processing" && "Processing photo: finding your product."}
@@ -822,8 +861,8 @@ export default function Studio() {
               <RotateCcw className="size-4" />
               New photo
             </Button>
-          </div>
-        </div>
+          </div>        </div>
+      
       </header>
 
       <main id="studio-controls" className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
@@ -1014,12 +1053,11 @@ export default function Studio() {
             </Card>
 
             {/* generative design */}
-            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")} aria-disabled={stage !== "ready"}>
-              <div className="mb-3 flex items-center gap-2">
-                <Wand2 className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  3 · Design
-                </h2>
+            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")} aria-disabled={stage !== "ready"}>              <div className="mb-3 flex items-center gap-2">
+                  <Wand2 className="size-4 text-primary" />
+                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                    3. Design
+                  </h2>
                 {design && (
                   <Badge variant="secondary" className="ml-auto h-4 rounded-full px-1.5 text-[10px]">
                     {design.family}
@@ -1128,19 +1166,45 @@ export default function Studio() {
               <div className="mt-4 space-y-4">
                 <SliderRow label="Product size" value={size} min={40} max={150} onChange={setSize} />
                 <SliderRow label="Baseline height" value={height} min={55} max={88} onChange={setHeight} />
-              </div>
-            </Card>
+              </div>            </Card>
 
             {/* shadows */}
+
+            <Card className="p-5">
+              <div className="mb-3 flex items-center gap-2">
+                <Layers className="size-4 text-primary" />
+                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                  7 / Multi-export
+                </h2>
+              </div>
+              <Button
+                variant="outline"
+                className="min-h-10 w-full"
+                size="sm"
+                onClick={exportAllStyles}
+                disabled={stage !== 'ready' || exportingAll}
+              >
+                <Download className="size-4" />
+                {exportingAll ? 'Exporting...' : 'Export all 5 styles'}
+              </Button>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Download every output style at your current ratio so you can pick later.
+              </p>
+            </Card>      <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); reset(); }}
+              className="text-center text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            >
+              Start over
+            </a>
             <Card
               className={cn("p-5", (stage !== "ready" || !shadowsOn) && "opacity-50 pointer-events-none")}
               aria-disabled={stage !== "ready" || !shadowsOn}
-            >
-              <div className="mb-3 flex items-center gap-2">
-                <Wand2 className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  5 · Shadow engine
-                </h2>
+            >              <div className="mb-3 flex items-center gap-2">
+                  <Wand2 className="size-4 text-primary" />
+                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                    5. Shadow engine
+                  </h2>
               </div>
               <button
                 onClick={() => setShadowsOn(!shadowsOn)}
@@ -1192,6 +1256,239 @@ export default function Studio() {
                 />
                 <SliderRow
                   label="Cast length"
+                  value={shadow.length}
+                  min={0.15}
+                  max={1.2}
+                  step={0.05}
+                  suffix="×"
+                  onChange={(v) => setShadow({ ...shadow, length: v })}
+                />
+                <SliderRow
+                  label="Softness"
+                  value={shadow.softness * 100}
+                  min={0}
+                  max={100}
+                  step={5}
+                  suffix="%"
+                  onChange={(v) => setShadow({ ...shadow, softness: v / 100 })}
+                />
+                <SliderRow
+                  label="Opacity"
+                  value={shadow.opacity * 100}
+                  min={0}
+                  max={100}
+                  step={5}
+                  suffix="%"
+                  onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
+                />
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Contact shadow</span>
+                  <span className="font-medium text-foreground">                          {shadow.contact ? 'On' : 'Off'}</span>
+                </div>
+              </div>
+            </Card>
+            <Card className="p-5">                <div className="mb-3 flex items-center gap-2">
+                  <Download className="size-4 text-primary" />
+                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                    6. Export
+                  </h2>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  className="min-h-10"
+                  size="sm"
+                  onClick={exportCurrentLook}
+                  disabled={stage !== 'ready'}
+                >
+                  <Download className="size-4" />
+                  Current look
+                </Button>
+                <Button
+                  variant="outline"
+                  className="min-h-10"
+                  size="sm"
+                  onClick={cycleRatio}
+                  disabled={stage !== 'ready'}
+                >
+                  <ImageUp className="size-4" />
+                  Change ratio
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Exports a full-resolution PNG of the current look at your chosen ratio.
+              </p>
+            </Card>
+            <a
+              href="#"
+              className="text-center text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+              onClick={(e) => {
+                e.preventDefault();
+                reset();
+              }}
+            >
+              Start over
+            </a>
+          </div>
+
+          {/* preview */}
+          <div className="relative flex flex-col gap-4">
+            {stage === 'empty' && (
+              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
+                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10">
+                  <ImageIcon className="size-7 text-primary" />
+                </div>
+                <p className="mt-4 font-display text-lg font-semibold">No photo yet</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Upload a product photo or try the sample to see the studio.
+                </p>
+                <Button className="mt-6" size="lg" asChild>
+                  <Link to="#">
+                    <Sparkles className="size-4" />
+                    Upload a photo
+                  </Link>
+                </Button>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Your photo never leaves this device.
+                </p>
+              </div>
+            )}
+            {stage === 'processing' && (
+              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
+                <span className="relative size-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <p className="mt-4 font-display text-lg font-semibold">Finding your product</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Cutting out the item and painting the light.
+                </p>
+              </div>
+            )}
+            {stage === 'error' && (
+              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
+                <div className="flex size-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                  <AlertTriangle className="size-5" />
+                </div>
+                <p className="mt-4 font-display text-lg font-semibold">Couldn't isolate a product</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {fitWarning
+                    ? "The whole photo was kept — try a cleaner shot."
+                    : "Try a clearer photo, or drop it again."}
+                </p>
+                <Button className="mt-6" size="lg" asChild>
+                  <Link to="#" onClick={(e) => { e.preventDefault(); reset(); }}>
+                    <RotateCcw className="size-4" />
+                    Try another photo
+                  </Link>
+                </Button>
+                {edgeWarning && (
+                  <p className="mt-3 text-xs text-destructive">
+                    The product touches the photo edge — leave a little margin around it.
+                  </p>
+                )}
+              </div>
+            )}
+            {stage === 'ready' && (
+              <div
+                role="region"
+                aria-label="Banner preview"
+                className="relative flex flex-1 flex-col rounded-2xl border border-border/70 bg-card overflow-hidden"
+              >
+                <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <span className="size-2 rounded-full bg-brand/60" />
+                    Preview
+                    <span className="ml-2 hidden sm:inline">· {getRatio(ratio).label} · {getRatio(ratio).w}×{getRatio(ratio).h}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setView('compare')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'compare' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      Compare
+                    </button>
+                    <button
+                      onClick={() => setView('after')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'after' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      After
+                    </button>
+                    <button
+                      onClick={() => setView('before')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'before' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      Before
+                    </button>
+                  </div>
+                </div>
+                {view === 'before' ? (
+                  <div className="flex flex-1 items-center justify-center bg-muted/40 p-4">
+                    <img src={beforeUrl ?? ''} alt="Original photo" className="max-w-full max-h-full rounded-lg object-contain" />
+                  </div>
+                ) : view === 'compare' && beforeUrl && afterUrl ? (
+                  <BeforeAfterSlider before={beforeUrl} after={afterUrl} className="flex-1" />
+                ) : (
+                  <div className="flex flex-1 items-center justify-center bg-muted/40 p-4">
+                    <canvas ref={canvasRef} className="max-w-full max-h-full rounded-lg shadow-sm" />
+                  </div>
+                )}
+              </div>
+            )}          </div>          </div>          </div>          </div>          </div>          </div>          </div>        </div>
+      </div>
+    </main>
+  </div>
+);
+
+function SliderRow({
+  label,
+  value,
+  min = 0,
+  max = 100,
+  step = 1,
+  suffix = '',
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+  onChange: (value: number) => void;
+}) {
+  const percents = Math.round(((value - min) / (max - min)) * 100);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span className="font-medium text-foreground">
+          {typeof value === 'number' && Number.isFinite(value)
+            ? `${Math.round(value * 10) / 10}${suffix}`
+            : '—'}
+        </span>
+      </div>
+      <Slider
+        className="w-full"
+        value={[value]}
+        min={min}
+        max={max}
+        step={step}
+        onValueChange={([v]) => onChange(v)}
+        style={{ height: 4 }}
+      />
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        <span>{String(min)}</span>
+        <span>{String(max)}</span>
+      </div>
+    </div>
+  );
+}
                   value={Math.round(shadow.length * 100)}
                   min={10}
                   max={140}
@@ -1549,8 +1846,8 @@ export default function Studio() {
                 </div>
               </>
             )}
-          </div>
-        </div>
+          </div>        </div>
+      
       </main>
     </div>
   );
