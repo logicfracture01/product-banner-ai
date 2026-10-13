@@ -4,7 +4,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Cutout } from '@/lib/pipeline/segmentation';
-import { iterativeRender, quickRender } from '@/lib/pipeline/iterativeRender';
+import { iterativeRender } from '@/lib/pipeline/iterativeRender';
 import type { RenderedImage } from '@/lib/pipeline/renderTypes';
 
 interface IterativeRenderPanelProps {

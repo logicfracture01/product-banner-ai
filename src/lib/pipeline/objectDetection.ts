@@ -8,8 +8,6 @@
 import {
   FilesetResolver,
   ObjectDetector,
-  type BoundingBox,
-  type Detection,
   type ObjectDetectorOptions,
 } from '@mediapipe/tasks-vision';
 
@@ -234,7 +232,7 @@ export function detectByColorContrast(
   }
   
   // Find the most contrasting block
-  let bestBlock = blocks.reduce((best, b) =>
+  const bestBlock = blocks.reduce((best, b) =>
     b.contrast > (best?.contrast ?? 0) ? b : best
   , null as typeof blocks[0] | null);
   

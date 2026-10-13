@@ -175,7 +175,7 @@ export async function aiMatteAsync(imageBitmap: ImageBitmap): Promise<MattingRes
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
     // Send to worker
-    const result = await new Promise<{ type: string; matte?: any; error?: string }>((resolve) => {
+    const result = await new Promise<{ type: string; matte?: MattingResult; error?: string }>((resolve) => {
       const handler = (e: MessageEvent) => {
         if (e.data.type === 'result' || e.data.type === 'error') {
           w!.removeEventListener('message', handler);
@@ -191,7 +191,7 @@ export async function aiMatteAsync(imageBitmap: ImageBitmap): Promise<MattingRes
       return null;
     }
     
-    return result.matte as MattingResult;
+    return result.matte ?? null;
   } catch (err) {
     console.error('[aiMatteAsync] failed:', err);
     return null;

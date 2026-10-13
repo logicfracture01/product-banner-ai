@@ -101,7 +101,6 @@ export function generateDesign(analysis: StyleAnalysis | null, seed: number): Ge
   
   // Derive backdrop hue from product
   let baseHue: number;
-  let sat: number;
   
   if (productSat > 0.2) {
     // Harmonize with product
@@ -119,7 +118,7 @@ export function generateDesign(analysis: StyleAnalysis | null, seed: number): Ge
     baseHue = hMin + rng() * (hMax - hMin);
   }
   
-  sat = isDark
+  const sat = isDark
     ? 8 + rng() * 12
     : family.satRange[0] + rng() * (family.satRange[1] - family.satRange[0]);
   

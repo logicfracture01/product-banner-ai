@@ -13,7 +13,7 @@
 //   - Signed-distance alpha matting for soft edges
 // ============================================================================
 
-import { clamp255, distanceInside, distanceOutside } from './pixels';
+import { clamp255, distanceInside } from './pixels';
 
 // ----------------------------------------------------------------------------
 // Types
@@ -542,7 +542,6 @@ function segmentPass(
   
   // SIGNED-DISTANCE ALPHA MATTING
   const distIn = distanceInside(filledClosed, width, height);
-  const distOut = distanceOutside(filledClosed, width, height);
   
   const alpha = new Uint8ClampedArray(n * 4);
   let softPixels = 0;

@@ -7,8 +7,7 @@
 //
 // The loop continues until results converge or complexity increases.
 
-import type { Cutout } from './segmentation';
-import type { RenderResult, RenderedImage, ImageComplexity, PipelineParams, DetectedFlaw } from './renderTypes';
+import type { RenderResult, RenderedImage, PipelineParams, DetectedFlaw } from './renderTypes';
 
 // Pipeline parameters are now in renderTypes.ts
 
@@ -348,12 +347,12 @@ function renderAndAnalyze(
   
   // Convert canvas to blob URL for display
   let url = '';
-  let revoke = () => {};
+  const revoke = () => {};
   
   try {
     const canvasEle = canvas as unknown as HTMLCanvasElement;
-    if (typeof (canvas as any).toDataURL === 'function') {
-      url = (canvas as any).toDataURL('image/png');
+    if (typeof canvasEle.toDataURL === 'function') {
+      url = canvasEle.toDataURL('image/png');
     }
   } catch {
     url = '';

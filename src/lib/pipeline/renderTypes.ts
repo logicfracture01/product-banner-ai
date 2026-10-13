@@ -9,13 +9,6 @@ export interface DetectedFlaw {
   description: string;
 }
 
-export interface DetectedFlaw {
-  type: string;
-  severity: number; // 0..1
-  regions: Array<{ x: number; y: number; w: number; h: number }>;
-  description: string;
-}
-
 export interface RenderResult {
   url: string;
   revoke: () => void;
@@ -55,18 +48,6 @@ export interface AdaptiveFix {
 }
 
 // Pipeline parameters (mirrored by banner.ts / iterativeRender.ts)
-export interface PipelineParams {
-  tolerance: number;
-  morphRadius: number;
-  shaveMultiplier: number;
-  shadowOpacity: number;
-  shadowLength: number;
-  shadowDirection: number;
-  placementScale: number;
-  backdropContrast?: number;
-}
-
-// Pipeline parameters
 export interface PipelineParams {
   tolerance: number;
   morphRadius: number;

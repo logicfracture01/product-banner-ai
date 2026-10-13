@@ -1,3 +1,19 @@
+// ============================================================================
+// Relight Studio — the on-device product-photo studio.
+//
+// Rebuilt from the ground up on the same stack and design system as the rest
+// of the app (React 19, TypeScript, shadcn/ui, Tailwind v4, Framer Motion) and
+// wired to the REAL pipeline in `src/lib/pipeline` — no mock renders, no fake
+// progress. One photo in → a studio banner with a physically-motivated shadow
+// out, computed entirely in the browser.
+//
+// Pipeline, in order:
+//   decode → downscale → (optional) detail boost → AI matting (BiRefNet)
+//   → custom edge-guided segmentation (refinement + fallback)
+//   → style analysis + recommendation → backdrop / generative design
+//   → coverage-integral shadow engine → composited banner
+// ============================================================================
+
 import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -20,7 +36,12 @@ import {
 } from "@/lib/pipeline/banner";
 import { DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
 import { loadSample as loadSamplePhoto, type SamplePhoto } from "@/lib/pipeline/samplePhotos";
-import { generateDesign, paintDesign, randomSeed, type GeneratedDesign } from "@/lib/pipeline/design";
+import {
+  generateDesign,
+  paintDesign,
+  randomSeed,
+  type GeneratedDesign,
+} from "@/lib/pipeline/design";
 import { upscaleImage } from "@/lib/pipeline/upscale";
 import { matteToCutout } from "@/lib/pipeline/aiMatting";
 import {
@@ -30,11 +51,20 @@ import {
   primaryDetection,
   type DetectResult,
 } from "@/lib/pipeline/objectDetection";
-import { aiMatteAsync, preloadMatting, setMattingProgressListener } from "@/lib/pipeline/aiMattingClient";
-import { paintShadow, renderShadowIntensity, toneMapShadow } from "@/lib/pipeline/shadow";
+import {
+  aiMatteAsync,
+  preloadMatting,
+  setMattingProgressListener,
+} from "@/lib/pipeline/aiMattingClient";
+import {
+  paintShadow,
+  renderShadowIntensity,
+  toneMapShadow,
+  DEFAULT_SHADOW,
+  type ShadowOptions,
+} from "@/lib/pipeline/shadow";
 import { segmentAsync } from "@/lib/pipeline/segmentClient";
 import type { Cutout } from "@/lib/pipeline/segment";
-import { DEFAULT_SHADOW, type ShadowOptions } from "@/lib/pipeline/shadow";
 import {
   analyzeCutout,
   getStyle,
@@ -46,6 +76,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
+  Check,
   Columns2,
   Cpu,
   Download,
@@ -57,13 +88,19 @@ import {
   Sparkles,
   Wand2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentType, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 
-type Stage = "empty" | "processing" | "ready" | "error";
+// ---------------------------------------------------------------- constants
 
+type Stage = "empty" | "processing" | "ready" | "error";
+type AiState = "unloaded" | "loading" | "ready" | "failed";
+type ViewMode = "compare" | "after" | "before";
+
+/** Longest side of the working bitmap. Bounds every later stage's memory. */
 const MAX_SIDE = 1400;
 
+/** Shadow presets — one tap to a believable light setup. */
 const SHADOW_PRESETS: Array<{ id: string; label: string; opts: Partial<ShadowOptions> }> = [
   { id: "studio", label: "Studio soft", opts: { direction: 55, length: 0.65, softness: 0.65, opacity: 0.4, contact: true } },
   { id: "sun", label: "Hard sun", opts: { direction: 30, length: 1.05, softness: 0.28, opacity: 0.5, contact: true } },
@@ -71,120 +108,110 @@ const SHADOW_PRESETS: Array<{ id: string; label: string; opts: Partial<ShadowOpt
   { id: "flat", label: "Flat lay", opts: { direction: 90, length: 0.35, softness: 0.75, opacity: 0.3, contact: true } },
 ];
 
+/** Small palette swatch shown on an output-style button. */
+const STYLE_SWATCH: Record<OutputStyleId, string> = {
+  "pure-white": "#ffffff",
+  "white-shadow": "linear-gradient(180deg,#fff 55%,#ececec)",
+  "premium-desk": "linear-gradient(180deg,#6b4a34,#452e20)",
+  studio: "linear-gradient(180deg,#f7f6f3,#e9e6df)",
+  moody: "linear-gradient(180deg,#33373b,#1e2124)",
+};
+
+// ---------------------------------------------------------------- component
+
 export default function Studio() {
+  // ---- stage / source ----
   const [stage, setStage] = useState<Stage>("empty");
   const [fileName, setFileName] = useState<string | null>(null);
   const [beforeUrl, setBeforeUrl] = useState<string | null>(null);
   const [afterUrl, setAfterUrl] = useState<string | null>(null);
-  const [edgeWarning, setEdgeWarning] = useState(false);
-  const [fitWarning, setFitWarning] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [samplePhoto, setSamplePhoto] = useState<SamplePhoto | null>(null);
+
+  // ---- look ----
   const [backdrop, setBackdrop] = useState<BackdropId>("studio");
   const [ratio, setRatio] = useState<RatioId>("4:5");
   const [shadow, setShadow] = useState<ShadowOptions>(DEFAULT_SHADOW);
   const [style, setStyle] = useState<OutputStyleId>("white-shadow");
   const [shadowsOn, setShadowsOn] = useState(true);
+  const [design, setDesign] = useState<GeneratedDesign | null>(null);
+  const [designSeed, setDesignSeed] = useState<number | null>(null);
+  const [view, setView] = useState<ViewMode>("compare");
+
+  // ---- placement ----
+  const [size, setSize] = useState(100);
+  const [height, setHeight] = useState(72);
+  const [offsetX, setOffsetX] = useState(0);
+
+  // ---- cutout tuning ----
+  const [tolerance, setTolerance] = useState(26);
+  const [upscaleFactor, setUpscaleFactor] = useState<1 | 2 | 3>(1);
+
+  // ---- analysis / warnings ----
   const [analysis, setAnalysis] = useState<StyleAnalysis | null>(null);
   const [recommended, setRecommended] = useState<OutputStyleId[]>([]);
   const [confidence, setConfidence] = useState<number | null>(null);
-  const [size, setSize] = useState(100); // percent of auto scale
-  const [height, setHeight] = useState(72); // baseline percent of canvas height
-  const [tolerance, setTolerance] = useState(26);
-  /** Horizontal placement offset, -1..1 = fraction of half the free canvas width. */
-  const [offsetX, setOffsetX] = useState(0);
-  /** Upscale factor applied to the source photo before segmentation. */
-  const [upscaleFactor, setUpscaleFactor] = useState<1 | 2 | 3>(1);
-  /** Active generative design (null = use the fixed backdrop picker). */
-  const [design, setDesign] = useState<GeneratedDesign | null>(null);
-  const [designSeed, setDesignSeed] = useState<number | null>(null);
-  /** AI matting model state (BiRefNet on-device). */
-  const [aiState, setAiState] = useState<"unloaded" | "loading" | "ready" | "failed">("unloaded");
-  /** Model download progress percent (null = indeterminate, e.g. WASM warmup). */
-  const [aiProgress, setAiProgress] = useState<number | null>(null);
-  /** Which layer the preview shows: compare slider, finished banner, or source. */
-  const [view, setView] = useState<"compare" | "after" | "before">("compare");
+  const [candidateCount, setCandidateCount] = useState(1);
+  const [edgeWarning, setEdgeWarning] = useState(false);
+  const [fitWarning, setFitWarning] = useState(false);
+  const [detection, setDetection] = useState<{ label: string; confidence: number } | null>(null);
 
+  // ---- AI engine status ----
+  const [aiState, setAiState] = useState<AiState>("unloaded");
+  const [aiProgress, setAiProgress] = useState<number | null>(null);
+
+  // ---- export ----
+  const [exportingAll, setExportingAll] = useState(false);
+
+  // ---- refs (mutable pipeline data, never read during render) ----
   const cutoutRef = useRef<Cutout | null>(null);
   const sourceRef = useRef<{ data: ImageData; width: number; height: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startOffset: number } | null>(null);
-  /** Reused preview-downscale canvas (sync JPEG fallback path only). */
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  /** Object URL of the current preview image — revoked when replaced. */
   const previewUrlRef = useRef<string | null>(null);
-  /** Monotonic tick so a slow async encode never overwrites a newer one. */
   const encodeSeqRef = useRef(0);
-  /** True while the built-in sample is being processed (enables its fallback). */
   const isDemoRef = useRef(false);
   const sampleWRef = useRef(0);
   const sampleHRef = useRef(0);
-  /** Guards the background model preload so it can only ever start once. */
   const preloadRef = useRef(false);
+  const cutoutTickRef = useRef(0);
   const [cutoutTick, setCutoutTick] = useState(0);
-  /** Stage-1 object detection result for the loaded photo (null = nothing found). */
-  const [detection, setDetection] = useState<{ label: string; confidence: number } | null>(null);
-  /**
-   * How many objects the segmenter found, mirrored into state.
-   *
-   * This used to be read straight off `cutoutRef.current` *during render* (in
-   * the screen-reader live region), which React forbids: a ref is not a
-   * reactive value, so the announcement could show a stale count and the read
-   * is unsafe under concurrent rendering. State keeps it correct and legal.
-   */
-  const [candidateCount, setCandidateCount] = useState(1);
-  /** Attribution for the sample photo currently loaded (null = uploaded file). */
-  const [samplePhoto, setSamplePhoto] = useState<SamplePhoto | null>(null);
+  const shadowCacheRef = useRef<{ key: string; intensity: Float32Array } | null>(null);
+  const baseCacheRef = useRef<{ key: string; base: Placement } | null>(null);
 
   /**
-   * Mutable pipeline settings, mirrored into a ref.
-   *
-   * `loadFile` / `loadSample` are memoised with an empty dependency list (they
-   * back a file input and window-level listeners), so without this they would
-   * capture the FIRST render's `upscaleFactor` and `tolerance` forever — moving
-   * the detail-boost or tolerance slider and then loading a photo silently used
-   * the stale values. The ref keeps those memoised closures correct.
+   * Mutable pipeline settings mirrored into a ref. `loadFile` / `loadSample`
+   * back stable handlers, so without this they'd capture the first render's
+   * upscale/tolerance forever.
    */
   const settingsRef = useRef({ upscaleFactor, tolerance });
   useEffect(() => {
     settingsRef.current = { upscaleFactor, tolerance };
   }, [upscaleFactor, tolerance]);
 
-  /** Begin the one-time background model download (also used by "retry"). */
+  // ---------------------------------------------------------------- AI warm-up
+
+  /** One-time background model download (also used by the retry chip). */
   const ensureWarm = useCallback(() => {
     if (preloadRef.current) return;
     preloadRef.current = true;
     setAiState((s) => (s === "unloaded" ? "loading" : s));
     void preloadMatting().then((ok) => {
       setAiState(ok ? "ready" : "failed");
-      // A failure leaves the engine free to try again via the retry chip.
-      if (!ok) preloadRef.current = false;
+      if (!ok) preloadRef.current = false; // allow a manual retry
     });
   }, []);
 
-  // Mirror the model download progress into state so the loading chip can
-  // show a real percentage instead of a spinner that spins for minutes.
   useEffect(() => {
-    setMattingProgressListener((pct) => {
-      if (pct === null) setAiProgress(null);
-      else setAiProgress(pct);
-    });
+    setMattingProgressListener((pct) => setAiProgress(pct));
     return () => setMattingProgressListener(null);
   }, []);
 
-  // Warm the model on FIRST INTENT, never on mount.
-  //
-  // Warming on mount charged every /studio visitor ~549 KB of worker JS, ~27 MB
-  // of ONNX WASM and ~60 MB of BiRefNet weights before they touched anything —
-  // punishing on exactly the phone-shot audience this app is built for. Waiting
-  // for the earliest real sign of a session (a click or a keypress) still gives
-  // the download a head start over the action that follows it, while someone
-  // who lands, reads and leaves pays nothing at all.
-  //
-  // Drag-and-drop is deliberately not a trigger: the drop itself loads a photo
-  // and calls aiMatteAsync, and preloadMatting does not take the request slot,
-  // so that first photo still gets the full AI path either way.
+  // Warm on first real intent (click/keypress), never on mount: the model is
+  // ~60 MB and most visitors don't process a photo.
   useEffect(() => {
     const onIntent = () => ensureWarm();
     window.addEventListener("pointerdown", onIntent, { once: true, passive: true });
@@ -195,8 +222,7 @@ export default function Studio() {
     };
   }, [ensureWarm]);
 
-  // Release the preview blob URL when leaving the studio so the image isn't
-  // pinned in memory by a revoked-forever object URL.
+  // Release the preview blob URL when leaving the studio.
   useEffect(
     () => () => {
       encodeSeqRef.current++;
@@ -208,316 +234,271 @@ export default function Studio() {
     [],
   );
 
-  // ---- load a File -------------------------------------------------------
-
-  /**
-   * Entry point for user-uploaded photos.
-   *
-   * Validates the file is an image, flips the UI into the "processing"
-   * stage, then hands off to {@link ingestBitmap} which does the real work
-   * (decode → downscale → upscale → segmentation). Errors are caught and
-   * surfaced as the "error" stage rather than thrown — the studio should
-   * never crash on a bad file.
-   */
-  const loadFile = useCallback(async (file: File) => {
-    if (!file.type.startsWith("image/")) return;
-    isDemoRef.current = false;
-    setStage("processing");
-    setFileName(file.name);
-    try {
-      const bitmap = await createImageBitmap(file);
-      await ingestBitmap(bitmap);
-    } catch (err) {
-      console.error(err);
-      setStage("error");
-    }
-    // `ingestBitmap` is intentionally not a dependency: it is redefined every
-    // render, so depending on it would re-create this callback and re-bind the
-    // event listeners constantly. The values it actually needs to observe at
-    // call time (upscale factor, tolerance) are read through `settingsRef`,
-    // which is stable — see its declaration for the staleness bug this fixes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  /** Apply one of the five output styles (drives backdrop + shadow defaults). */
+  const applyStyle = useCallback((id: OutputStyleId) => {
+    const def = getStyle(id);
+    setStyle(id);
+    setBackdrop(def.backdrop);
+    setShadowsOn(def.shadows);
+    if (def.shadows) setShadow({ ...def.shadow });
   }, []);
 
+  // ---------------------------------------------------------------- segmentation
+
   /**
-   * Decode pipeline: bitmap → normalized pixels → segmentation.
-   *
-   * Steps, in order:
-   *   1. Downscale so the longest side fits MAX_SIDE — keeps every later
-   *      stage (and the AI matting model) within a predictable memory
-   *      budget regardless of the phone camera's resolution.
-   *   2. Optional detail-preserving upscale (2x/3x). Soft phone crops gain
-   *      crisp edges and legible text BEFORE segmentation, so the cutout,
-   *      shadows and final banner all inherit the extra detail.
-   *   3. Build a model bitmap at the FINAL pixel size (upscale changes
-   *      dimensions, so the original bitmap can't be reused as-is).
-   *   4. Kick off {@link runSegment} on the normalized pixels.
-   *
-   * Failure of the upscale stage is non-fatal (logged, continues at
-   * native size); failure of segmentation is handled inside runSegment.
+   * AI matting (BiRefNet, MIT) first; the custom edge-guided engine refines
+   * and, when the model is unavailable, replaces it. A Stage-1 detector gives
+   * an independent opinion that only costs anything when the two disagree.
    */
-  const ingestBitmap = async (bitmap: ImageBitmap) => {
-    const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-    let w = Math.max(1, Math.round(bitmap.width * scale));
-    let h = Math.max(1, Math.round(bitmap.height * scale));
-    const cv = document.createElement("canvas");
-    cv.width = w;
-    cv.height = h;
-    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    let data = ctx.getImageData(0, 0, w, h);
-
-    // Detail-preserving upscale (edge-directed interpolation + halo-safe
-    // sharpening). Small phone crops come in soft; this restores crisp
-    // product edges, text and seams BEFORE segmentation so the cutout,
-    // shadows and the banner all inherit the extra detail.
-    const { upscaleFactor: upscale } = settingsRef.current;
-    if (upscale > 1) {
+  const runSegment = useCallback(
+    async (
+      rgba: Uint8ClampedArray,
+      w: number,
+      h: number,
+      tol: number,
+      bitmap?: ImageBitmap,
+      customOnly?: boolean,
+      detectionPromise?: Promise<DetectResult[]>,
+    ) => {
+      setAiState(customOnly ? "failed" : "loading");
       try {
-        const up = upscaleImage(data.data, w, h, {
-          factor: upscale === 3 ? 3 : 2,
-          sharpening: 0.55,
-          crispness: 0.75,
-        });
-        w = up.width;
-        h = up.height;
-        const ucv = document.createElement("canvas");
-        ucv.width = w;
-        ucv.height = h;
-        const uctx = ucv.getContext("2d", { willReadFrequently: true })!;
-        const id = uctx.createImageData(w, h);
-        id.data.set(up.rgba);
-        uctx.putImageData(id, 0, 0);
-        data = uctx.getImageData(0, 0, w, h);
-      } catch (err) {
-        console.warn("upscale failed, continuing at native size", err);
-      }
-    }
+        let cutout: Cutout | null = null;
+        let fromAi = false;
 
-    sourceRef.current = { data, width: w, height: h };
-    setBeforeUrl(cv.toDataURL("image/jpeg", 0.85));
-
-    // give the UI a frame to show the processing state
-    await new Promise((r) => setTimeout(r, 30));
-
-    // The AI model needs a bitmap of the FINAL (possibly upscaled) pixels, and
-    // detections must be reported in the same coordinate space as the cutout,
-    // so both stages read this one canvas.
-    let modelBmp: ImageBitmap = bitmap;
-    let detectSource: HTMLCanvasElement = cv;
-    if (bitmap.width !== w || bitmap.height !== h) {
-      const bcv = document.createElement("canvas");
-      bcv.width = w;
-      bcv.height = h;
-      bcv.getContext("2d")!.putImageData(data, 0, 0);
-      modelBmp = await createImageBitmap(bcv);
-      detectSource = bcv;
-    }
-
-    // STAGE 1 — object detection. Started here and awaited inside runSegment so
-    // it overlaps the matting work rather than serialising in front of it, and
-    // resolved to [] on any failure so it can never delay or break the cutout.
-    const detectionPromise = detectObjects(detectSource).catch((): DetectResult[] => []);
-
-    await runSegment(
-      data.data,
-      w,
-      h,
-      settingsRef.current.tolerance,
-      modelBmp,
-      false,
-      detectionPromise,
-    );
-  };
-
-  // ---- segmentation: AI matting first (BiRefNet, MIT), custom engine as
-  // refinement + fallback. The AI mask handles complex scenes (product close
-  // in color to the background, clutter) that defeat color models.
-  const runSegment = async (
-    rgba: Uint8ClampedArray,
-    w: number,
-    h: number,
-    tol: number,
-    bitmap?: ImageBitmap,
-    customOnly?: boolean,
-    detectionPromise?: Promise<DetectResult[]>,
-  ) => {
-    if (customOnly) {
-      setAiState("failed");
-    } else {
-      setAiState("loading");
-    }
-    try {
-      let cutout: Cutout | null = null;
-      let fromAi = false;
-
-      // 1) AI matte (needs the bitmap at the same size as rgba)
-      if (bitmap && !customOnly) {
-        try {
-          // aiMatteAsync runs in a worker; a watchdog bounds the wait so a
-          // stalled load/inference can never hang the UI (falls back below).
-          const matte = await aiMatteAsync(bitmap);
-          if (matte) {
-            cutout = matteToCutout(
-              new ImageData(new Uint8ClampedArray(rgba), w, h),
-              matte,
-            );
-            setAiState("ready");
-            setAiProgress(100);
-            fromAi = true;
-          } else {
+        if (bitmap && !customOnly) {
+          try {
+            const matte = await aiMatteAsync(bitmap);
+            if (matte) {
+              cutout = matteToCutout(new ImageData(new Uint8ClampedArray(rgba), w, h), matte);
+              setAiState("ready");
+              setAiProgress(100);
+              fromAi = true;
+            } else {
+              setAiState("failed");
+              setAiProgress(null);
+            }
+          } catch {
             setAiState("failed");
             setAiProgress(null);
           }
-        } catch {
+        } else {
           setAiState("failed");
-          setAiProgress(null);
         }
-      } else {
-        setAiState("failed");
-      }
 
-      // 2) fallback / refinement: custom engine
-      if (!cutout) {
-        cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
-      }
+        if (!cutout) {
+          cutout = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
+        }
 
-      // STAGE 1 CROSS-CHECK. The AI matte and the detector are independent
-      // opinions about the same question, so disagreement between them is real
-      // evidence that one of them latched onto the wrong thing (a tablecloth, a
-      // wall). When the matte's framing has almost nothing to do with the
-      // detected object, ask the custom engine for a second opinion and keep
-      // whichever box agrees with the detector. Only runs on disagreement, so
-      // the common path pays nothing extra.
-      let primary: DetectResult | null = null;
-      try {
-        const detections = detectionPromise ? await detectionPromise : [];
-        primary = primaryDetection(detections);
-        setDetection(
-          primary && primary.label
-            ? { label: primary.label, confidence: primary.confidence }
-            : null,
-        );
-      } catch {
-        setDetection(null);
-      }
-      const target = primary ? detectionToBox(primary) : null;
-      if (fromAi && cutout && target) {
-        const agreed = boxIoU(cutout.box, target);
-        if (agreed < 0.15) {
-          try {
-            const alt = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
-            if (boxIoU(alt.box, target) > agreed) cutout = alt;
-          } catch {
-            /* keep the AI cutout */
+        // Stage-1 cross-check: only runs when the matte's framing disagrees
+        // with the detector, so the common path pays nothing extra.
+        let primary: DetectResult | null = null;
+        try {
+          const detections = detectionPromise ? await detectionPromise : [];
+          primary = primaryDetection(detections);
+          setDetection(
+            primary && primary.label
+              ? { label: primary.label, confidence: primary.confidence }
+              : null,
+          );
+        } catch {
+          setDetection(null);
+        }
+        const target = primary ? detectionToBox(primary) : null;
+        if (fromAi && cutout && target) {
+          const agreed = boxIoU(cutout.box, target);
+          if (agreed < 0.15) {
+            try {
+              const alt = await segmentAsync({ rgba, width: w, height: h, tolerance: tol });
+              if (boxIoU(alt.box, target) > agreed) cutout = alt;
+            } catch {
+              /* keep the AI cutout */
+            }
           }
         }
+
+        // Safety net for the deterministic sample: its subject box is known
+        // exactly, so fall back to it instead of dropping the user on an error.
+        if (
+          isDemoRef.current &&
+          isDegenerateCutout(cutout.box, w, h) &&
+          w === sampleWRef.current &&
+          h === sampleHRef.current
+        ) {
+          cutout = boxCutout(rgba, w, h, DEMO_FALLBACK_BOX);
+        }
+
+        const { box } = cutout;
+        cutoutRef.current = cutout;
+        cutoutTickRef.current += 1;
+        setCandidateCount(Math.max(1, cutout.candidates.length));
+        setConfidence(cutout.confidence);
+        setEdgeWarning(cutout.touchedEdges.size > 0);
+        const coversAll = box.w > w * 0.97 && box.h > h * 0.97;
+        setFitWarning(coversAll);
+
+        try {
+          const a = analyzeCutout(cutout);
+          setAnalysis(a);
+          const rec = recommendStyles(a);
+          setRecommended(rec);
+          if (rec[0]) applyStyle(rec[0]);
+        } catch {
+          setAnalysis(null);
+          setRecommended([]);
+        }
+
+        setSize(100);
+        setHeight(72);
+        setOffsetX(0);
+        setDesign(null);
+        setDesignSeed(null);
+        setCutoutTick(cutoutTickRef.current);
+        setStage(coversAll ? "error" : "ready");
+      } catch (err) {
+        console.error("[studio] segmentation failed", err);
+        setStage("error");
+      }
+    },
+    // applyStyle is stable; every other dependency is a state setter.
+    [applyStyle],
+  );
+
+  // ---------------------------------------------------------------- ingest
+
+  /** bitmap → normalized pixels → (optional upscale) → detection + matting. */
+  const ingestBitmap = useCallback(
+    async (bitmap: ImageBitmap) => {
+      const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+      let w = Math.max(1, Math.round(bitmap.width * scale));
+      let h = Math.max(1, Math.round(bitmap.height * scale));
+      const cv = document.createElement("canvas");
+      cv.width = w;
+      cv.height = h;
+      const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      let data = ctx.getImageData(0, 0, w, h);
+
+      const { upscaleFactor: upscale, tolerance: tol } = settingsRef.current;
+
+      if (upscale > 1) {
+        try {
+          const up = upscaleImage(data.data, w, h, {
+            factor: upscale === 3 ? 3 : 2,
+            sharpening: 0.55,
+            crispness: 0.75,
+          });
+          w = up.width;
+          h = up.height;
+          const ucv = document.createElement("canvas");
+          ucv.width = w;
+          ucv.height = h;
+          const uctx = ucv.getContext("2d", { willReadFrequently: true })!;
+          const id = uctx.createImageData(w, h);
+          id.data.set(up.rgba);
+          uctx.putImageData(id, 0, 0);
+          data = uctx.getImageData(0, 0, w, h);
+        } catch (err) {
+          console.warn("[studio] upscale failed, continuing at native size", err);
+        }
       }
 
-      // 3) safety net: a whole-frame or near-empty cutout can't produce a
-      // usable banner. For the built-in sample the laptop's position is known
-      // exactly (the scene is deterministic), so fall back to that box rather
-      // than dropping the user on an error screen.
-      if (
-        isDemoRef.current &&
-        isDegenerateCutout(cutout.box, w, h) &&
-        w === sampleWRef.current &&
-        h === sampleHRef.current
-      ) {
-        cutout = boxCutout(rgba, w, h, DEMO_FALLBACK_BOX);
+      sourceRef.current = { data, width: w, height: h };
+      setBeforeUrl(cv.toDataURL("image/jpeg", 0.85));
+
+      // Let the "processing" UI paint before the heavy work begins.
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Detection + matting must share one coordinate space, so both read the
+      // final (possibly upscaled) canvas.
+      let modelBmp: ImageBitmap = bitmap;
+      let detectSource: HTMLCanvasElement = cv;
+      if (bitmap.width !== w || bitmap.height !== h) {
+        const bcv = document.createElement("canvas");
+        bcv.width = w;
+        bcv.height = h;
+        bcv.getContext("2d")!.putImageData(data, 0, 0);
+        modelBmp = await createImageBitmap(bcv);
+        detectSource = bcv;
       }
 
-      const { box } = cutout;
-      cutoutRef.current = cutout;
-      setCandidateCount(Math.max(1, cutout.candidates.length));
-      setConfidence(cutout.confidence);
-      setEdgeWarning(cutout.touchedEdges.size > 0);
-      const coversAll = box.w > w * 0.97 && box.h > h * 0.97;
-      setFitWarning(coversAll);
-      // Style analysis + recommendation straight from the cutout pixels,
-      // then auto-apply the best-match output style.
+      const detectionPromise = detectObjects(detectSource).catch((): DetectResult[] => []);
+      await runSegment(data.data, w, h, tol, modelBmp, false, detectionPromise);
+    },
+    [runSegment],
+  );
+
+  /** Entry point for user uploads: validate → process → surface errors. */
+  const loadFile = useCallback(
+    async (file: File) => {
+      if (!file.type.startsWith("image/")) return;
+      isDemoRef.current = false;
+      setStage("processing");
+      setFileName(file.name);
       try {
-        const a = analyzeCutout(cutout);
-        setAnalysis(a);
-        const rec = recommendStyles(a);
-        setRecommended(rec);
-        if (rec[0]) applyStyle(rec[0]);
-      } catch {
-        setAnalysis(null);
-        setRecommended([]);
+        const bitmap = await createImageBitmap(file);
+        await ingestBitmap(bitmap);
+      } catch (err) {
+        console.error(err);
+        setStage("error");
       }
-      setSize(100);
-      setHeight(72);
-      setOffsetX(0);
-      setDesign(null);
-      setDesignSeed(null);
-      setCutoutTick((t) => t + 1);
-      setStage(coversAll ? "error" : "ready");
-    } catch (err) {
-      console.error(err);
-      setStage("error");
-    }
-  };
+    },
+    [ingestBitmap],
+  );
 
-  // ---- load the procedural sample ---------------------------------------
-
-  /**
-   * Loads a sample photo and runs the EXACT same pipeline as a real upload — it
-   * goes through {@link ingestBitmap}, so downscale, detail boost, detection and
-   * matting behave identically to a user's own file.
-   *
-   * Real photographs are preferred (a drawn scene proves the maths but not the
-   * product claim); the procedural scene is the offline fallback. Only the
-   * procedural path gets `isDemoRef`, because only its subject position is known
-   * exactly — see DEMO_FALLBACK_BOX.
-   */
-  const loadSample = useCallback(async (preferredId?: string) => {
-    setStage("processing");
-    try {
-      const sample = await loadSamplePhoto(preferredId);
-      setFileName(sample.name);
-      setSamplePhoto(sample.photo);
-      if (sample.procedural) {
-        // The fallback box is expressed in procedural-scene pixels and is only
-        // valid while those pixels have not been rescaled.
-        sampleWRef.current = sample.bitmap.width;
-        sampleHRef.current = sample.bitmap.height;
-        isDemoRef.current = true;
-      } else {
-        isDemoRef.current = false;
-        sampleWRef.current = 0;
-        sampleHRef.current = 0;
+  /** Real sample photo first, deterministic procedural scene as offline fallback. */
+  const loadSample = useCallback(
+    async (preferredId?: string) => {
+      setStage("processing");
+      try {
+        const sample = await loadSamplePhoto(preferredId);
+        setFileName(sample.name);
+        setSamplePhoto(sample.photo);
+        if (sample.procedural) {
+          // The fallback box lives in procedural-scene pixels and is only valid
+          // while those pixels haven't been rescaled.
+          sampleWRef.current = sample.bitmap.width;
+          sampleHRef.current = sample.bitmap.height;
+          isDemoRef.current = true;
+        } else {
+          isDemoRef.current = false;
+          sampleWRef.current = 0;
+          sampleHRef.current = 0;
+        }
+        await ingestBitmap(sample.bitmap);
+      } catch (err) {
+        console.error(err);
+        setStage("error");
       }
-      await ingestBitmap(sample.bitmap);
-    } catch (err) {
-      console.error(err);
-      setStage("error");
-    }
-    // Same reasoning as `loadFile` above: stable identity on purpose, with
-    // mutable pipeline settings read through `settingsRef`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    },
+    [ingestBitmap],
+  );
 
-  // ---- render loop -------------------------------------------------------
-  // Three caches keep slider dragging at 60fps on a 1080×1350 canvas:
-  //   1. autoPlacement — pure function of cutout + ratio, called on every
-  //      tick and again on every export; memoized per (cutout, ratio).
-  //   2. Shadow geometry (coverage sweep + filtering) — the expensive part.
-  //      Cached per cutout/placement; the strength (opacity) slider and the
-  //      contact toggle only re-tone-map from the cached intensity field.
-  //   3. Preview encode — the downscale runs into an OffscreenCanvas and is
-  //      encoded asynchronously, so the sync JPEG encode (~8ms of jank per
-  //      tick at 648px) happens off the interaction path entirely.
-  const shadowCacheRef = useRef<{
-    key: string;
-    intensity: Float32Array;
-  } | null>(null);
-  const baseCacheRef = useRef<{ key: string; base: Placement } | null>(null);
+  // ---- paste an image from the clipboard ---------------------------------
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (!item.type.startsWith("image/")) continue;
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        e.preventDefault();
+        const ext = blob.type.split("/")[1] || "png";
+        void loadFile(new File([blob], `pasted.${ext}`, { type: blob.type }));
+        return;
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [loadFile]);
 
-  /** Auto placement for the current cutout + ratio (memoized). */
+  // ---------------------------------------------------------------- placement
+
+  /** Auto placement for the current cutout + ratio (memoized per cutout+ratio). */
   const basePlacement = useCallback(
     (cutout: Cutout, ratioId: RatioId) => {
-      const key = `${cutoutTick}|${ratioId}`;
+      const key = `${cutoutTickRef.current}|${ratioId}`;
       const hit = baseCacheRef.current;
       if (hit && hit.key === key) return hit.base;
       const r = getRatio(ratioId);
@@ -525,7 +506,7 @@ export default function Studio() {
       baseCacheRef.current = { key, base };
       return base;
     },
-    [cutoutTick],
+    [],
   );
 
   /** Base placement + the user's size / baseline / nudge adjustments. */
@@ -541,11 +522,15 @@ export default function Studio() {
     [basePlacement, offsetX, height, size],
   );
 
+  // ---------------------------------------------------------------- preview render
+
   useEffect(() => {
     if (stage !== "ready" || !cutoutRef.current) return;
     let raf = 0;
+    let cancelled = false;
     const t = setTimeout(() => {
       raf = requestAnimationFrame(() => {
+        if (cancelled) return;
         const cutout = cutoutRef.current;
         if (!cutout) return;
         const r = getRatio(ratio);
@@ -555,15 +540,14 @@ export default function Studio() {
         out.height = r.h;
         const ctx = out.getContext("2d")!;
         const place = placeFor(cutout, ratio);
+
         ctx.clearRect(0, 0, r.w, r.h);
-        if (design) {
-          paintDesign(ctx, r.w, r.h, design);
-        } else {
-          drawBackdrop(ctx, r.w, r.h, backdrop);
-        }
+        if (design) paintDesign(ctx, r.w, r.h, design);
+        else drawBackdrop(ctx, r.w, r.h, backdrop);
+
         if (shadowsOn) {
           const geoKey = [
-            cutoutTick,
+            cutoutTickRef.current,
             ratio,
             size,
             height,
@@ -578,32 +562,23 @@ export default function Studio() {
             intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
             shadowCacheRef.current = { key: geoKey, intensity };
           }
-          const mask = toneMapShadow(intensity!, r.w, r.h, shadow);
-          paintShadow(ctx, mask, r.w, r.h);
+          paintShadow(ctx, toneMapShadow(intensity!, r.w, r.h, shadow), r.w, r.h);
         } else {
           shadowCacheRef.current = null;
         }
+
         drawProduct(ctx, cutout, place);
-        emitPreview(out, r.w, r.h, setAfterUrl, previewUrlRef, encodeSeqRef, previewCanvasRef);
+        emitPreview(out, r.w, setAfterUrl, previewUrlRef, encodeSeqRef, previewCanvasRef);
       });
     }, 40);
     return () => {
+      cancelled = true;
       clearTimeout(t);
       cancelAnimationFrame(raf);
     };
-  }, [
-    stage,
-    cutoutTick,
-    backdrop,
-    ratio,
-    shadow,
-    shadowsOn,
-    size,
-    height,
-    offsetX,
-    design,
-    placeFor,
-  ]);
+  }, [stage, cutoutTick, backdrop, ratio, shadow, shadowsOn, size, height, offsetX, design, placeFor]);
+
+  // ---------------------------------------------------------------- actions
 
   const reset = () => {
     isDemoRef.current = false;
@@ -622,9 +597,11 @@ export default function Studio() {
     setBeforeUrl(null);
     setAfterUrl(null);
     setFileName(null);
+    setSamplePhoto(null);
     setEdgeWarning(false);
     setFitWarning(false);
     setTolerance(26);
+    setUpscaleFactor(1);
     setShadow(DEFAULT_SHADOW);
     setSize(100);
     setHeight(72);
@@ -634,31 +611,23 @@ export default function Studio() {
     setAnalysis(null);
     setRecommended([]);
     setConfidence(null);
+    setDetection(null);
     setStyle("white-shadow");
     setShadowsOn(true);
     setBackdrop("studio");
+    setView("compare");
   };
 
-  // Manual retry: always use the custom engine (the user is tuning the
-  // tolerance slider — the AI matte ignores tolerance by design).
-  const retrySegmentation = (opts?: { customOnly?: boolean }) => {
+  /** Re-run the cutout at the current tolerance (custom engine only). */
+  const retrySegmentation = () => {
     const src = sourceRef.current;
     if (!src) return;
     setStage("processing");
     setTimeout(
-      () => void runSegment(src.data.data, src.width, src.height, tolerance, undefined, opts?.customOnly),
+      () =>
+        void runSegment(src.data.data, src.width, src.height, tolerance, undefined, true),
       30,
     );
-  };
-
-  // Pick one of the five output styles; the style drives backdrop + shadow
-  // defaults, but everything stays tweakable afterwards.
-  const applyStyle = (id: OutputStyleId) => {
-    const def = getStyle(id);
-    setStyle(id);
-    setBackdrop(def.backdrop);
-    setShadowsOn(def.shadows);
-    if (def.shadows) setShadow({ ...def.shadow });
   };
 
   const activePreset = SHADOW_PRESETS.find(
@@ -669,33 +638,28 @@ export default function Studio() {
       p.opts.opacity === shadow.opacity,
   );
 
-  // Render the current look at full export resolution (no JPEG preview
-  // artifacts) onto the main canvas.
-  const renderFullQuality = () => {
+  /** Render the current look at full export resolution onto a fresh canvas. */
+  const renderFullQuality = (): HTMLCanvasElement | null => {
     const cutout = cutoutRef.current;
-    const canvas = canvasRef.current;
-    if (!cutout || !canvas) return null;
+    if (!cutout) return null;
     const r = getRatio(ratio);
-    canvas.width = r.w;
-    canvas.height = r.h;
-    const ctx = canvas.getContext("2d")!;
+    const cv = document.createElement("canvas");
+    cv.width = r.w;
+    cv.height = r.h;
+    const ctx = cv.getContext("2d")!;
     const place = placeFor(cutout, ratio);
     ctx.clearRect(0, 0, r.w, r.h);
-    if (design) {
-      paintDesign(ctx, r.w, r.h, design);
-    } else {
-      drawBackdrop(ctx, r.w, r.h, backdrop);
-    }
+    if (design) paintDesign(ctx, r.w, r.h, design);
+    else drawBackdrop(ctx, r.w, r.h, backdrop);
     if (shadowsOn) {
       const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
       paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
     }
     drawProduct(ctx, cutout, place);
-    return canvas;
+    return cv;
   };
 
-  // Render one of the 5 output styles at full resolution onto an offscreen
-  // canvas and download it.
+  /** Render one output style at full resolution and download it. */
   const exportStyle = (id: OutputStyleId) => {
     const cutout = cutoutRef.current;
     if (!cutout) return;
@@ -707,127 +671,91 @@ export default function Studio() {
     const ctx = cv.getContext("2d")!;
     const place = placeFor(cutout, ratio);
     ctx.clearRect(0, 0, r.w, r.h);
-    if (design && id === style) {
-      // batch export of the CURRENT look keeps the active generated design
-      paintDesign(ctx, r.w, r.h, design);
-    } else {
-      drawBackdrop(ctx, r.w, r.h, def.backdrop);
-    }
+    if (design && id === style) paintDesign(ctx, r.w, r.h, design);
+    else drawBackdrop(ctx, r.w, r.h, def.backdrop);
     if (def.shadows) {
       const intensity = renderShadowIntensity(cutout, place, r.w, r.h, def.shadow);
       paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, def.shadow), r.w, r.h);
     }
     drawProduct(ctx, cutout, place);
     exportBanner(cv, `relight-${id}`);
-  };  // Batch export: renders and downloads every one of the 5 output styles at
-    // full quality, so a seller can pick the best look offline afterwards.
-    // Downloads are staggered 350 ms apart — browsers silently drop rapid
-    // successive downloads, and the stagger also keeps the main thread free
-    // enough for the progress UI to stay responsive.
-    const [exportingAll, setExportingAll] = useState(false);
-    const exportAllStyles = async () => {
-      if (exportingAll) return; // guard against double-clicks
-      setExportingAll(true);
-      try {
-        // staggered so the browser doesn't block multiple downloads
-        for (const s of OUTPUT_STYLES) {
-          exportStyle(s.id);
-          await new Promise((r) => setTimeout(r, 350));
-        }
-      } finally {
-        setExportingAll(false);
+  };
+
+  /** Batch export — every style, staggered so the browser doesn't drop them. */
+  const exportAllStyles = async () => {
+    if (exportingAll) return;
+    setExportingAll(true);
+    try {
+      for (const s of OUTPUT_STYLES) {
+        exportStyle(s.id);
+        await new Promise((r) => setTimeout(r, 350));
       }
-    };
+    } finally {
+      setExportingAll(false);
+    }
+  };
 
-    // Render the current look at full export resolution (no JPEG preview
-    // artifacts) onto the main canvas.
-    const renderFullQuality = () => {
-      const cutout = cutoutRef.current;
-      const canvas = canvasRef.current;
-      if (!cutout || !canvas) return null;
-      const r = getRatio(ratio);
-      canvas.width = r.w;
-      canvas.height = r.h;
-      const ctx = canvas.getContext("2d")!;
-      const place = placeFor(cutout, ratio);
-      ctx.clearRect(0, 0, r.w, r.h);
-      if (design) {
-        paintDesign(ctx, r.w, r.h, design);
-      } else {
-        drawBackdrop(ctx, r.w, r.h, backdrop);
-      }
-      if (shadowsOn) {
-        const intensity = renderShadowIntensity(cutout, place, r.w, r.h, shadow);
-        paintShadow(ctx, toneMapShadow(intensity, r.w, r.h, shadow), r.w, r.h);
-      }
-      drawProduct(ctx, cutout, place);
-      return canvas;
-    };
+  const exportCurrentLook = () => {
+    const canvas = renderFullQuality();
+    if (!canvas) return;
+    exportBanner(canvas, `relight-current-${style}`);
+  };
 
-    // Download the current look as a full-resolution PNG.
-    const exportCurrentLook = () => {
-      const canvas = renderFullQuality();
-      if (!canvas) return;
-      const r = getRatio(ratio);
-      exportBanner(canvas, `relight-current-${style}`);
-    };
+  const cycleRatio = () => {
+    setRatio((r) => {
+      const list = RATIOS.map((x) => x.id);
+      return list[(list.indexOf(r) + 1) % list.length];
+    });
+  };
 
-    // Change ratio and keep the preview in sync.
-    const cycleRatio = () => {
-      setRatio((r) => {
-        const list = RATIOS.map((x) => x.id);
-        const idx = list.indexOf(r);
-        return list[(idx + 1) % list.length];
-      });
-    };
+  // ---------------------------------------------------------------- render
 
-  return (  <div className="min-h-screen bg-background text-foreground">
+  return (
+    <div className="min-h-screen bg-background text-foreground">
       <a
         href="#studio-controls"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
       >
         Skip to controls
       </a>
-      {/* polite live region: announces processing/result status to screen readers */}
-      {/* AI engine status chip (visible while first model load runs) */}
+
+      {/* Engine-status chips (fixed, low-key) */}
       {aiState === "loading" && (
         <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
           <span className="relative flex size-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
             <span className="relative inline-flex size-2 rounded-full bg-primary" />
           </span>
-          Loading AI cutout engine
-          {" "}
+          Loading AI cutout engine{" "}
           {aiProgress !== null
             ? `— ${aiProgress}%${aiProgress >= 100 ? " (starting up…)" : ""}`
             : "— first run downloads ~60 MB, then cached"}
-          <span className="text-muted-foreground">· runs in background, app stays usable</span>        </div>
-      
+          <span className="text-muted-foreground">· app stays usable</span>
+        </div>
       )}
-      {/* Stage-1 object detection result (what the detector thinks the subject is) */}
       {detection && (
-        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
+        <div className="fixed right-4 bottom-4 z-50 flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium shadow-lg backdrop-blur">
           <Sparkles className="size-3.5 text-primary" />
-          Main object: {detection.label} · {Math.round(detection.confidence * 100)}%        </div>
-      
+          Main object: {detection.label} · {Math.round(detection.confidence * 100)}%
+        </div>
       )}
       {aiState === "failed" && (
-        <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-2 text-xs font-medium text-[#7a5a14] shadow-lg">
-          AI engine unavailable — using on-device color-model cutout
+        <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-brand/40 bg-brand/10 px-4 py-2 text-xs font-medium text-brand-foreground shadow-lg">
+          AI engine unavailable — using the on-device colour-model cutout
           <button
             onClick={() => {
-              // Retry the model load in the background; the custom engine
-              // keeps working meanwhile either way.
               setAiProgress(null);
               preloadRef.current = false;
               ensureWarm();
             }}
-            className="underline decoration-dotted underline-offset-2 hover:text-[#5c430d]"
+            className="underline decoration-dotted underline-offset-2 hover:opacity-80"
           >
             retry
-          </button>        </div>
-      
+          </button>
+        </div>
       )}
+
+      {/* Screen-reader status */}
       <p aria-live="polite" className="sr-only">
         {stage === "processing" && "Processing photo: finding your product."}
         {stage === "ready" &&
@@ -837,10 +765,14 @@ export default function Studio() {
             ? "Could not find a clear product. The whole photo was kept."
             : "Could not isolate a product in that photo.")}
       </p>
+
       {/* top bar */}
       <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-4 sm:px-6">
-          <Link to="/" className="rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <Link
+            to="/"
+            className="rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
             <Logo size={28} />
           </Link>
           <div className="flex items-center gap-2">
@@ -861,22 +793,17 @@ export default function Studio() {
               <RotateCcw className="size-4" />
               New photo
             </Button>
-          </div>        </div>
-      
+          </div>
+        </div>
       </header>
 
       <main id="studio-controls" className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
         <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
           {/* -------------------------------------------------- controls */}
           <div className="flex flex-col gap-4">
-            {/* upload */}
+            {/* 1 · photo */}
             <Card className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <ImageUp className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  1 · Photo
-                </h2>
-              </div>
+              <StepHeading icon={ImageUp} title="1 · Photo" />
               <input
                 ref={inputRef}
                 type="file"
@@ -884,7 +811,7 @@ export default function Studio() {
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  if (f) loadFile(f);
+                  if (f) void loadFile(f);
                   e.target.value = "";
                 }}
               />
@@ -908,7 +835,7 @@ export default function Studio() {
                   e.preventDefault();
                   setDragOver(false);
                   const f = e.dataTransfer.files?.[0];
-                  if (f) loadFile(f);
+                  if (f) void loadFile(f);
                 }}
                 className={cn(
                   "flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border px-4 py-7 text-center transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
@@ -918,7 +845,7 @@ export default function Studio() {
                 <div className="flex size-10 items-center justify-center rounded-full bg-primary/10">
                   <ImageUp className="size-5 text-primary" />
                 </div>
-                <p className="mt-3 text-sm font-medium">Drop a photo or click to browse</p>
+                <p className="mt-3 text-sm font-medium">Drop, paste, or click to browse</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   JPG / PNG — product on any messy background
                 </p>
@@ -951,13 +878,10 @@ export default function Studio() {
                   "Uses a real product photo; falls back to the built-in scene when offline."
                 )}
               </p>
-              <div className="mt-3">
+
+              <div className="mt-4">
                 <Label className="text-xs text-muted-foreground">Detail boost (upscale)</Label>
-                <div
-                  className="mt-1.5 grid grid-cols-3 gap-2"
-                  role="radiogroup"
-                  aria-label="Upscale factor"
-                >
+                <div className="mt-1.5 grid grid-cols-3 gap-2" role="radiogroup" aria-label="Upscale factor">
                   {([1, 2, 3] as const).map((f) => (
                     <button
                       key={f}
@@ -982,17 +906,12 @@ export default function Studio() {
               </div>
             </Card>
 
-            {/* output styles */}
+            {/* 2 · output style */}
             <Card
               className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}
               aria-disabled={stage !== "ready"}
             >
-              <div className="mb-3 flex items-center gap-2">
-                <Sparkles className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  2 · Output style
-                </h2>
-              </div>
+              <StepHeading icon={Sparkles} title="2 · Output style" />
               <div className="grid gap-2" role="radiogroup" aria-label="Output style">
                 {OUTPUT_STYLES.map((s) => {
                   const rank = recommended.indexOf(s.id);
@@ -1012,27 +931,13 @@ export default function Studio() {
                     >
                       <span
                         className="size-8 shrink-0 rounded-lg ring-1 ring-black/10"
-                        style={{
-                          background:
-                            s.id === "pure-white"
-                              ? "#fff"
-                              : s.id === "white-shadow"
-                                ? "linear-gradient(180deg,#fff 55%,#ececec)"
-                                : s.id === "premium-desk"
-                                  ? "linear-gradient(180deg,#6b4a34,#452e20)"
-                                  : s.id === "studio"
-                                    ? "linear-gradient(180deg,#f7f6f3,#e9e6df)"
-                                    : "linear-gradient(180deg,#33373b,#1e2124)",
-                        }}
+                        style={{ background: STYLE_SWATCH[s.id] }}
                       />
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5 text-sm font-medium">
                           {s.label}
                           {rank === 0 && stage === "ready" && (
-                            <Badge
-                              variant="secondary"
-                              className="h-4 rounded-full px-1.5 text-[10px]"
-                            >
+                            <Badge variant="secondary" className="h-4 rounded-full px-1.5 text-[10px]">
                               Best match
                             </Badge>
                           )}
@@ -1047,17 +952,21 @@ export default function Studio() {
               </div>
               {!shadowsOn && stage === "ready" && (
                 <p className="mt-3 text-xs text-muted-foreground">
-                  Shadows are off for this style — flip the switch in step 4 to add them.
+                  Shadows are off for this style — flip the switch in step 5 to add them.
                 </p>
               )}
             </Card>
 
-            {/* generative design */}
-            <Card className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")} aria-disabled={stage !== "ready"}>              <div className="mb-3 flex items-center gap-2">
-                  <Wand2 className="size-4 text-primary" />
-                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                    3. Design
-                  </h2>
+            {/* 3 · design */}
+            <Card
+              className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}
+              aria-disabled={stage !== "ready"}
+            >
+              <div className="mb-3 flex items-center gap-2">
+                <Wand2 className="size-4 text-primary" />
+                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                  3 · Design
+                </h2>
                 {design && (
                   <Badge variant="secondary" className="ml-auto h-4 rounded-full px-1.5 text-[10px]">
                     {design.family}
@@ -1081,7 +990,7 @@ export default function Studio() {
                     setDesign(generateDesign(analysis, seed));
                   }}
                 >
-                  <Sparkles className="size-4 text-primary" />
+                  <Sparkles className="size-4" />
                   {design ? "Surprise again" : "Surprise design"}
                 </Button>
                 {design && (
@@ -1114,18 +1023,13 @@ export default function Studio() {
               )}
             </Card>
 
-            {/* backdrop + ratio */}
+            {/* 4 · backdrop & size */}
             <Card
-              className={cn("p-5", stage !== "ready" && "opacity-50 pointer-events-none")}
+              className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}
               aria-disabled={stage !== "ready"}
             >
-              <div className="mb-3 flex items-center gap-2">
-                <Wand2 className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  4 · Backdrop &amp; size
-                </h2>
-              </div>
-              <div className="grid grid-cols-6 gap-2" role="radiogroup" aria-label="Backdrop color">
+              <StepHeading icon={Wand2} title="4 · Backdrop & size" />
+              <div className="grid grid-cols-6 gap-2" role="radiogroup" aria-label="Backdrop colour">
                 {BACKDROPS.map((b) => (
                   <button
                     key={b.id}
@@ -1134,7 +1038,7 @@ export default function Studio() {
                     role="radio"
                     aria-checked={backdrop === b.id}
                     className={cn(
-                      "h-10 rounded-lg ring-1 ring-black/10 transition-transform hover:scale-105 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "h-10 rounded-lg ring-1 ring-black/10 transition-transform outline-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring",
                       backdrop === b.id && "ring-2 ring-primary ring-offset-2 ring-offset-card",
                     )}
                     style={{ background: b.swatch }}
@@ -1164,48 +1068,24 @@ export default function Studio() {
               <p className="mt-2 text-xs text-muted-foreground">{getRatio(ratio).hint}</p>
 
               <div className="mt-4 space-y-4">
-                <SliderRow label="Product size" value={size} min={40} max={150} onChange={setSize} />
-                <SliderRow label="Baseline height" value={height} min={55} max={88} onChange={setHeight} />
-              </div>            </Card>
-
-            {/* shadows */}
-
-            <Card className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <Layers className="size-4 text-primary" />
-                <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                  7 / Multi-export
-                </h2>
+                <SliderRow label="Product size" value={size} min={40} max={150} suffix="%" onChange={setSize} />
+                <SliderRow
+                  label="Baseline height"
+                  value={height}
+                  min={55}
+                  max={88}
+                  suffix="%"
+                  onChange={setHeight}
+                />
               </div>
-              <Button
-                variant="outline"
-                className="min-h-10 w-full"
-                size="sm"
-                onClick={exportAllStyles}
-                disabled={stage !== 'ready' || exportingAll}
-              >
-                <Download className="size-4" />
-                {exportingAll ? 'Exporting...' : 'Export all 5 styles'}
-              </Button>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Download every output style at your current ratio so you can pick later.
-              </p>
-            </Card>      <a
-              href="#"
-              onClick={(e) => { e.preventDefault(); reset(); }}
-              className="text-center text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-            >
-              Start over
-            </a>
+            </Card>
+
+            {/* 5 · shadow engine */}
             <Card
-              className={cn("p-5", (stage !== "ready" || !shadowsOn) && "opacity-50 pointer-events-none")}
-              aria-disabled={stage !== "ready" || !shadowsOn}
-            >              <div className="mb-3 flex items-center gap-2">
-                  <Wand2 className="size-4 text-primary" />
-                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                    5. Shadow engine
-                  </h2>
-              </div>
+              className={cn("p-5", stage !== "ready" && "pointer-events-none opacity-50")}
+              aria-disabled={stage !== "ready"}
+            >
+              <StepHeading icon={Layers} title="5 · Shadow engine" />
               <button
                 onClick={() => setShadowsOn(!shadowsOn)}
                 role="switch"
@@ -1256,49 +1136,85 @@ export default function Studio() {
                 />
                 <SliderRow
                   label="Cast length"
-                  value={shadow.length}
-                  min={0.15}
-                  max={1.2}
-                  step={0.05}
-                  suffix="×"
-                  onChange={(v) => setShadow({ ...shadow, length: v })}
+                  value={Math.round(shadow.length * 100)}
+                  min={10}
+                  max={140}
+                  suffix="%"
+                  onChange={(v) => setShadow({ ...shadow, length: v / 100 })}
                 />
                 <SliderRow
                   label="Softness"
-                  value={shadow.softness * 100}
+                  value={Math.round(shadow.softness * 100)}
                   min={0}
                   max={100}
-                  step={5}
                   suffix="%"
                   onChange={(v) => setShadow({ ...shadow, softness: v / 100 })}
                 />
                 <SliderRow
-                  label="Opacity"
-                  value={shadow.opacity * 100}
-                  min={0}
-                  max={100}
-                  step={5}                   suffix="%"
-                   onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
-                 />
-                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                   <span>Contact shadow</span>
-                   <span className="font-medium text-foreground">{shadow.contact ? 'On' : 'Off'}</span>
-                 </div>
-               </div>
+                  label="Strength"
+                  value={Math.round(shadow.opacity * 100)}
+                  min={10}
+                  max={80}
+                  suffix="%"
+                  onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
+                />
+                <button
+                  onClick={() => setShadow({ ...shadow, contact: !shadow.contact })}
+                  role="switch"
+                  aria-checked={shadow.contact}
+                  className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  <span className="text-muted-foreground">Contact shadow</span>
+                  <span
+                    className={cn(
+                      "relative h-5 w-9 rounded-full transition-colors",
+                      shadow.contact ? "bg-primary" : "bg-muted",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
+                        shadow.contact ? "left-[18px]" : "left-0.5",
+                      )}
+                    />
+                  </span>
+                </button>
+              </div>
             </Card>
+
+            {/* 6 · cutout sensitivity */}
+            <Card className={cn("p-5", !beforeUrl && "pointer-events-none opacity-50")}>
+              <StepHeading icon={Wand2} title="6 · Cutout sensitivity" />
+              <SliderRow
+                label="Background tolerance"
+                value={tolerance}
+                min={8}
+                max={60}
+                onChange={setTolerance}
+                onCommit={(v) => {
+                  const src = sourceRef.current;
+                  if (!src) return;
+                  setStage("processing");
+                  setTimeout(
+                    () => void runSegment(src.data.data, src.width, src.height, v, undefined, true),
+                    30,
+                  );
+                }}
+              />
+              <p className="mt-2 text-xs text-muted-foreground">
+                Raise it if backdrop bits survive; lower it if the product gets eaten.
+              </p>
+            </Card>
+
+            {/* 7 · export */}
             <Card className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                 <Download className="size-4 text-primary" />
-                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                   6. Export
-                 </h2>
-               </div>
+              <StepHeading icon={Download} title="7 · Export" />
               <div className="grid grid-cols-2 gap-2">
                 <Button
                   className="min-h-10"
                   size="sm"
                   onClick={exportCurrentLook}
-                  disabled={stage !== 'ready'}
+                  disabled={stage !== "ready"}
                 >
                   <Download className="size-4" />
                   Current look
@@ -1308,347 +1224,31 @@ export default function Studio() {
                   className="min-h-10"
                   size="sm"
                   onClick={cycleRatio}
-                  disabled={stage !== 'ready'}
+                  disabled={stage !== "ready"}
                 >
                   <ImageUp className="size-4" />
-                  Change ratio
+                  Next ratio
                 </Button>
               </div>
+              <Button
+                variant="outline"
+                className="mt-2 min-h-10 w-full"
+                size="sm"
+                onClick={() => void exportAllStyles()}
+                disabled={stage !== "ready" || exportingAll}
+              >
+                <Layers className="size-4" />
+                {exportingAll ? "Exporting all 5…" : "Export all 5 styles"}
+              </Button>
               <p className="mt-3 text-xs text-muted-foreground">
-                Exports a full-resolution PNG of the current look at your chosen ratio.
-              </p>
-            </Card>
-            <a
-              href="#"
-              className="text-center text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-              onClick={(e) => {
-                e.preventDefault();
-                reset();
-              }}
-            >
-              Start over
-            </a>
-          </div>
-
-          {/* preview */}
-          <div className="relative flex flex-col gap-4">
-            {stage === 'empty' && (
-              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
-                <div className="flex size-14 items-center justify-center rounded-full bg-primary/10">
-                  <ImageIcon className="size-7 text-primary" />
-                </div>
-                <p className="mt-4 font-display text-lg font-semibold">No photo yet</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Upload a product photo or try the sample to see the studio.
-                </p>
-                <Button className="mt-6" size="lg" asChild>
-                  <Link to="#">
-                    <Sparkles className="size-4" />
-                    Upload a photo
-                  </Link>
-                </Button>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Your photo never leaves this device.
-                </p>
-              </div>
-            )}
-            {stage === 'processing' && (
-              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
-                <span className="relative size-10 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <p className="mt-4 font-display text-lg font-semibold">Finding your product</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Cutting out the item and painting the light.
-                </p>
-              </div>
-            )}
-            {stage === 'error' && (
-              <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center">
-                <div className="flex size-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-                  <AlertTriangle className="size-5" />
-                </div>
-                <p className="mt-4 font-display text-lg font-semibold">Couldn't isolate a product</p>
-                <p className="mt-1 text-sm text-muted-foreground">                   {fitWarning
-                      ? "The whole photo was kept — try a cleaner shot."
-                      : "Try a clearer photo, or drop it again."}
-                   </p>
-                 </div>
-
-              </>                 )}
-                {stage === 'ready' && (
-              <div
-                role="region"
-                aria-label="Banner preview"
-                className="relative flex flex-1 flex-col rounded-2xl border border-border/70 bg-card overflow-hidden"
-              >
-                <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                    <span className="size-2 rounded-full bg-brand/60" />
-                    Preview
-                    <span className="ml-2 hidden sm:inline">· {getRatio(ratio).label} · {getRatio(ratio).w}×{getRatio(ratio).h}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setView('compare')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'compare' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      Compare
-                    </button>
-                    <button
-                      onClick={() => setView('after')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'after' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      Banner
-                    </button>
-                    <button
-                      onClick={() => setView('before')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'before' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      Source
-                    </button>
-                  </div>
-                </div>
-
-                {/* preview stage */}
-                {stage === 'empty' && (
-                  <EmptyState onBrowse={() => inputRef.current?.click()} onSample={() => void loadSample()} />
-                )}
-                {stage === 'processing' && <ProcessingState />}
-                {stage === 'error' && (
-                  <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center p-12">
-                    <div className="flex size-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-                      <AlertTriangle className="size-5" />
-                    </div>
-                    <p className="mt-4 font-display text-lg font-semibold">Couldn't isolate a product</p>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {fitWarning
-                        ? "The whole photo was kept — try a cleaner shot."
-                        : "Try a clearer photo, or drop it again."}
-                    </p>
-                    <div className="mt-6 flex flex-wrap gap-3">
-                      <Button size="lg" onClick={retrySegmentation}>
-                        <RotateCcw className="size-4" />
-                        Retry
-                      </Button>
-                      <Button variant="outline" size="lg" onClick={() => inputRef.current?.click()}>
-                        <ImageUp className="size-4" />
-                        Another photo
-                      </Button>
-                    </div>
-                    {edgeWarning && (
-                      <p className="mt-3 text-xs text-destructive">
-                        The product touches the photo edge — leave a little margin around it.
-                      </p>
-                    )}
-                  </div>
-                )}                 {stage === 'ready' && (
-                   <>
-
-                {edgeWarning && (
-                  <p className="mt-3 text-xs text-destructive">
-                    The product touches the photo edge — leave a little margin around it.
-                  </p>
-                )}
-              </div>                 )}
-                {stage === 'ready' && (
-              <div
-                role="region"
-                aria-label="Banner preview"
-                className="relative flex flex-1 flex-col rounded-2xl border border-border/70 bg-card overflow-hidden"
-              >
-                <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
-                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                    <span className="size-2 rounded-full bg-brand/60" />
-                    Preview
-                    <span className="ml-2 hidden sm:inline">· {getRatio(ratio).label} · {getRatio(ratio).w}×{getRatio(ratio).h}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setView('compare')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'compare' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      Compare
-                    </button>
-                    <button
-                      onClick={() => setView('after')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'after' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      After
-                    </button>
-                    <button
-                      onClick={() => setView('before')}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                        view === 'before' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                      )}
-                    >
-                      Before
-                    </button>
-                  </div>
-                </div>
-                {view === 'before' ? (
-                  <div className="flex flex-1 items-center justify-center bg-muted/40 p-4">
-                    <img src={beforeUrl ?? ''} alt="Original photo" className="max-w-full max-h-full rounded-lg object-contain" />
-                  </div>
-                ) : view === 'compare' && beforeUrl && afterUrl ? (
-                  <BeforeAfterSlider before={beforeUrl} after={afterUrl} className="flex-1" />
-                ) : (
-                  <div className="flex flex-1 items-center justify-center bg-muted/40 p-4">
-                    <canvas ref={canvasRef} className="max-w-full max-h-full rounded-lg shadow-sm" />
-                  </div>
-                )}
-              </div>
-            )}          </div>          </div>          </div>          </div>          </div>          </div>          </div>        </div>
-      </div>
-    </main>
-  </div>
-);
-
-function SliderRow({
-  label,
-  value,
-  min = 0,
-  max = 100,
-  step = 1,
-  suffix = '',
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min?: number;
-  max?: number;
-  step?: number;
-  suffix?: string;
-  onChange: (value: number) => void;
-}) {
-  const percents = Math.round(((value - min) / (max - min)) * 100);
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>{label}</span>
-        <span className="font-medium text-foreground">
-          {typeof value === 'number' && Number.isFinite(value)
-            ? `${Math.round(value * 10) / 10}${suffix}`
-            : '—'}
-        </span>
-      </div>
-      <Slider
-        className="w-full"
-        value={[value]}
-        min={min}
-        max={max}
-        step={step}
-        onValueChange={([v]) => onChange(v)}
-        style={{ height: 4 }}
-      />
-      <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>{String(min)}</span>
-        <span>{String(max)}</span>
-      </div>
-    </div>
-  );
-}
-
-            {/* shadow tuning */}
-            <div className="mt-4 space-y-4">
-              <SliderRow
-                label="Cast length"
-                value={Math.round(shadow.length * 100)}
-                min={10}
-                max={140}
-                suffix="%"
-                onChange={(v) => setShadow({ ...shadow, length: v / 100 })}
-              />
-              <SliderRow
-                label="Softness"
-                value={Math.round(shadow.softness * 100)}
-                min={0}
-                max={100}
-                suffix="%"
-                onChange={(v) => setShadow({ ...shadow, softness: v / 100 })}
-              />
-              <SliderRow
-                label="Strength"
-                value={Math.round(shadow.opacity * 100)}
-                min={10}
-                max={80}
-                suffix="%"
-                onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
-              />
-              <button
-                onClick={() => setShadow({ ...shadow, contact: !shadow.contact })}
-                role="switch"
-                aria-checked={shadow.contact}
-                className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              >
-                <span className="text-muted-foreground">Contact shadow</span>
-                <span
-                  className={cn(
-                    "relative h-5 w-9 rounded-full transition-colors",
-                    shadow.contact ? "bg-primary" : "bg-muted",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
-                      shadow.contact ? "left-[18px]" : "left-0.5",
-                    )}
-                  />
-                </span>
-              </button>
-            </div>
-            </Card>
-
-            {/* cutout tuning */}
-            {/* `beforeUrl` mirrors whether a source photo exists, so this card
-                can be dimmed without reading a ref during render. */}
-            <Card className={cn("p-5", !beforeUrl && "opacity-50 pointer-events-none")}>
-              <h2 className="mb-3 font-display text-sm font-semibold tracking-wide uppercase">
-                Cutout sensitivity
-              </h2>
-              <SliderRow
-                label="Background tolerance"
-                value={tolerance}
-                min={8}
-                max={60}
-                onChange={(v) => setTolerance(v)}
-                onCommit={(v) => {
-                  const src = sourceRef.current;
-                  if (src) {
-                    setStage("processing");
-                    // tolerance only affects the custom engine — run custom-only
-                    setTimeout(() => void runSegment(src.data.data, src.width, src.height, v, undefined, true), 30);
-                  }
-                }}
-              />
-              <p className="mt-2 text-xs text-muted-foreground">
-                Raise it if backdrop bits survive; lower it if the product gets eaten.
+                Full-resolution PNGs at your chosen ratio — current look, or all five styles to pick later.
               </p>
             </Card>
 
             {/* style analysis */}
             {stage === "ready" && analysis && (
               <Card className="p-5">
-                <div className="mb-3 flex items-center gap-2">
-                  <Sparkles className="size-4 text-primary" />
-                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                    Style analysis
-                  </h2>
-                </div>
+                <StepHeading icon={Sparkles} title="What we read" />
                 <div className="flex items-center gap-2">
                   {analysis.palette.map((hex, i) => (
                     <span
@@ -1660,40 +1260,23 @@ function SliderRow({
                   ))}
                 </div>
                 <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Category</dt>
-                    <dd className="font-medium">{analysis.category}</dd>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Tone</dt>
-                    <dd className="font-medium">{Math.round(analysis.tone * 100)}</dd>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Contrast</dt>
-                    <dd className="font-medium">{Math.round(analysis.contrast * 100)}</dd>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Saturation</dt>
-                    <dd className="font-medium">{Math.round(analysis.saturation * 100)}</dd>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Finish</dt>
-                    <dd className="font-medium">
-                      {analysis.glossy > 0.3 ? "Glossy" : analysis.glossy > 0.12 ? "Semi-gloss" : "Matte"}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <dt className="text-muted-foreground">Best style</dt>
-                    <dd className="font-medium">{getStyle(recommended[0] ?? style).label}</dd>
-                  </div>
+                  <Stat label="Category" value={analysis.category} />
+                  <Stat label="Tone" value={String(Math.round(analysis.tone * 100))} />
+                  <Stat label="Contrast" value={String(Math.round(analysis.contrast * 100))} />
+                  <Stat label="Saturation" value={String(Math.round(analysis.saturation * 100))} />
+                  <Stat
+                    label="Finish"
+                    value={
+                      analysis.glossy > 0.3 ? "Glossy" : analysis.glossy > 0.12 ? "Semi-gloss" : "Matte"
+                    }
+                  />
+                  <Stat label="Best style" value={getStyle(recommended[0] ?? style).label} />
                   <div className="col-span-2 mt-1 flex items-center justify-between gap-2">
                     <dt className="text-muted-foreground">Objects detected</dt>
                     <dd className="font-medium">
                       {candidateCount}
                       {candidateCount > 1 && (
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          · centered one framed
-                        </span>
+                        <span className="ml-1 text-xs text-muted-foreground">· centered one framed</span>
                       )}
                     </dd>
                   </div>
@@ -1710,12 +1293,19 @@ function SliderRow({
                               : "bg-destructive",
                         )}
                       />
-                      {confidence !== null ? Math.round(confidence * 100) + "%" : "—"}
+                      {confidence !== null ? `${Math.round(confidence * 100)}%` : "—"}
                     </dd>
                   </div>
                 </dl>
               </Card>
             )}
+
+            <button
+              onClick={reset}
+              className="text-center text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            >
+              Start over
+            </button>
           </div>
 
           {/* -------------------------------------------------- preview */}
@@ -1731,21 +1321,21 @@ function SliderRow({
                   <>
                     <p className="font-medium">We kept the whole photo — no clear product stood out</p>
                     <p className="max-w-sm text-sm text-muted-foreground">
-                      Raise the “Background tolerance” slider and retry, or use a photo
-                      where the product stands apart from the background.
+                      Raise the “Background tolerance” slider and retry, or use a photo where the
+                      product stands apart from the background.
                     </p>
                   </>
                 ) : (
                   <>
                     <p className="font-medium">We couldn’t isolate a product in that photo</p>
                     <p className="max-w-sm text-sm text-muted-foreground">
-                      Try the “Cutout sensitivity” slider, or a photo where the product stands
-                      apart from the background.
+                      Try the “Cutout sensitivity” slider, or a photo where the product stands apart
+                      from the background.
                     </p>
                   </>
                 )}
                 <div className="mt-2 flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => retrySegmentation()}>
+                  <Button variant="outline" size="sm" onClick={retrySegmentation}>
                     <RotateCcw className="size-4" />
                     Retry
                   </Button>
@@ -1756,12 +1346,13 @@ function SliderRow({
                 </div>
               </Card>
             )}
+
             {stage === "ready" && (
               <>
                 {(edgeWarning || fitWarning) && (
-                  <div className="flex items-start gap-2.5 rounded-xl border border-[#F4B23E]/40 bg-[#F4B23E]/10 px-4 py-3 text-sm">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[#B47B16]" />
-                    <span className="text-[#7a5a14]">
+                  <div className="flex items-start gap-2.5 rounded-xl border border-brand/40 bg-brand/10 px-4 py-3 text-sm">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-brand" />
+                    <span className="text-brand-foreground">
                       {edgeWarning &&
                         "The product touches the edge of the photo — the cutout may clip. Photos with space around the product work best."}
                       {fitWarning &&
@@ -1802,11 +1393,7 @@ function SliderRow({
                     </div>
                     <div className="flex items-center gap-2">
                       {offsetX !== 0 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setOffsetX(0)}
-                        >
+                        <Button variant="outline" size="sm" onClick={() => setOffsetX(0)}>
                           <MoveHorizontal className="size-4" />
                           Recenter
                         </Button>
@@ -1823,23 +1410,21 @@ function SliderRow({
                       </Button>
                       <Button
                         size="sm"
-                        onClick={() => {
-                          const canvas = renderFullQuality();
-                          if (canvas) exportBanner(canvas, "relight-banner");
-                        }}
+                        onClick={exportCurrentLook}
+                        title="Download the current banner as a full-resolution PNG"
                       >
                         <Download className="size-4" />
                         Download PNG
                       </Button>
                     </div>
                   </div>
+
                   <div
                     ref={previewBoxRef}
                     className="mx-auto max-w-[560px] cursor-grab touch-none select-none active:cursor-grabbing"
                     onPointerDown={(e) => {
-                      // Only start a placement drag on the image itself —
-                      // drags that begin on the compare handle belong to the
-                      // BeforeAfterSlider and must not move the product.
+                      // Drags that start on the compare handle belong to the
+                      // BeforeAfterSlider, not to product placement.
                       const target = e.target as HTMLElement;
                       if (target.closest("[data-compare-handle]")) return;
                       if (e.button !== 0) return;
@@ -1851,8 +1436,10 @@ function SliderRow({
                       const box = previewBoxRef.current;
                       if (!d || !box) return;
                       const rect = box.getBoundingClientRect();
-                      // full box width maps to -1..1, clamped
-                      const next = Math.max(-1, Math.min(1, d.startOffset + ((e.clientX - d.startX) / rect.width) * 2));
+                      const next = Math.max(
+                        -1,
+                        Math.min(1, d.startOffset + ((e.clientX - d.startX) / rect.width) * 2),
+                      );
                       setOffsetX(Math.round(next * 100) / 100);
                     }}
                     onPointerUp={() => (dragRef.current = null)}
@@ -1874,7 +1461,8 @@ function SliderRow({
                   >
                     {view === "compare" ? (
                       <BeforeAfterSlider before={beforeUrl} after={afterUrl} />
-                    ) : (() => {
+                    ) : (
+                      (() => {
                         const src = view === "after" ? afterUrl : beforeUrl;
                         return src ? (
                           <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/40">
@@ -1886,15 +1474,14 @@ function SliderRow({
                             />
                           </div>
                         ) : (
-                          // No bitmap yet (first render / right after reset):
-                          // hold the box with a shimmer instead of a broken img.
                           <div
                             role="status"
                             aria-label="Preview rendering"
                             className="shimmer aspect-[4/5] w-full rounded-xl border border-border/70"
                           />
                         );
-                      })()}
+                      })()
+                    )}
                   </div>
                   <p className="mt-3 text-center text-xs text-muted-foreground">
                     {view === "compare"
@@ -1904,11 +1491,12 @@ function SliderRow({
                         : "The original photo. Switch to Compare to see what the engine changed."}
                   </p>
                 </Card>
+
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   {[
-                    { k: "Detected", v: candidateCount + (candidateCount === 1 ? " object" : " objects") },
+                    { k: "Detected", v: `${candidateCount} ${candidateCount === 1 ? "object" : "objects"}` },
                     { k: "Shadow", v: "Coverage integral" },
-                    { k: "Output", v: getRatio(ratio).w + " × " + getRatio(ratio).h },
+                    { k: "Output", v: `${getRatio(ratio).w} × ${getRatio(ratio).h}` },
                     { k: "Privacy", v: "On-device" },
                   ].map((s) => (
                     <div
@@ -1924,8 +1512,8 @@ function SliderRow({
                 </div>
               </>
             )}
-          </div>        </div>
-      
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -1933,34 +1521,52 @@ function SliderRow({
 
 // ---------------------------------------------------------------- pieces
 
+/** Numbered step heading shared by every control card. */
+function StepHeading({
+  icon: Icon,
+  title,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+}) {
+  return (
+    <div className="mb-3 flex items-center gap-2">
+      <Icon className="size-4 text-primary" />
+      <h2 className="font-display text-sm font-semibold tracking-wide uppercase">{title}</h2>
+    </div>
+  );
+}
+
+/** Definition row used by the analysis panel. */
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-2">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="truncate font-medium">{value}</dd>
+    </div>
+  );
+}
+
 /**
  * Downscale the full-resolution banner into a preview image and hand it to
  * React.
  *
- * Prefers `OffscreenCanvas.convertToBlob()`: the JPEG encode then runs off the
- * interaction path, so dragging the size / shadow sliders stays at 60fps
- * instead of paying a synchronous ~8ms encode every frame. Falls back to a
- * reused 2D canvas + `toDataURL` where OffscreenCanvas is unavailable.
- *
- * A sequence number guards the async path so a slow encode can never land
- * after — and overwrite — a newer preview.
+ * Prefers `OffscreenCanvas.convertToBlob()` so the JPEG encode runs off the
+ * interaction path (dragging the size / shadow sliders stays at 60fps).
+ * Falls back to a reused 2D canvas + `toDataURL`. A sequence number guards the
+ * async path so a slow encode can never overwrite a newer preview.
  */
 function emitPreview(
   source: HTMLCanvasElement,
   sw: number,
-  sh: number,
   setUrl: (url: string) => void,
   urlRef: { current: string | null },
   seqRef: { current: number },
   fallbackRef: { current: HTMLCanvasElement | null },
 ) {
   const pw = 648;
-  const ph = Math.max(1, Math.round((sh / sw) * pw));
   const seq = ++seqRef.current;
 
-  // Publish a preview. If a newer tick already won, the URL handed to us is
-  // orphaned — revoke it immediately, otherwise every dropped frame during a
-  // slider drag leaks a ~40 KB blob for the lifetime of the document.
   const commit = (url: string, isBlob: boolean) => {
     if (seq !== seqRef.current) {
       if (isBlob) URL.revokeObjectURL(url);
@@ -1969,12 +1575,12 @@ function emitPreview(
     const prev = urlRef.current;
     urlRef.current = url;
     setUrl(url);
-    // Blob URLs are retained until revoked; free the one we just replaced.
     if (prev && prev !== url && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
   };
 
   if (typeof OffscreenCanvas !== "undefined") {
     try {
+      const ph = Math.max(1, Math.round((source.height / sw) * pw));
       const oc = new OffscreenCanvas(pw, ph);
       const octx = oc.getContext("2d");
       if (octx) {
@@ -2015,9 +1621,8 @@ function syncPreview(
 /**
  * Labeled slider with a live numeric readout.
  *
- * `onChange` fires on every drag tick (cheap re-tone-map path);
- * `onCommit`, when provided, fires once on release (used for the expensive
- * geometry-recompute path so dragging stays smooth).
+ * `onChange` fires on every drag tick (cheap); `onCommit`, when provided,
+ * fires once on release (used for the expensive re-segmentation path).
  */
 function SliderRow({
   label,
@@ -2058,19 +1663,34 @@ function SliderRow({
   );
 }
 
-/** Landing card shown before any photo is loaded: drop zone + sample button. */
+/** Shown before any photo is loaded: drop zone + sample button. */
 function EmptyState({ onBrowse, onSample }: { onBrowse: () => void; onSample: () => void }) {
+  const points = [
+    "BiRefNet AI matting + a custom edge-guided engine",
+    "Coverage-integral shadow engine, painted in-browser",
+    "Full-resolution PNGs for feeds, squares and banners",
+  ];
   return (
-    <Card className="flex flex-col items-center justify-center rounded-2xl border-dashed p-16 text-center">
+    <Card className="flex flex-col items-center justify-center rounded-2xl border-dashed p-12 text-center sm:p-16">
       <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10">
         <ImageUp className="size-7 text-primary" />
       </div>
       <h2 className="mt-5 font-display text-2xl font-semibold">Start with a messy photo</h2>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
-        A laptop on a cluttered deck, a jacket on a bed — anything a human could
-        point at. Everything runs on your device; nothing is uploaded.
+      <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+        A laptop on a cluttered deck, a jacket on a bed — anything a human could point at.
+        Everything runs on your device; nothing is uploaded.
       </p>
-      <div className="mt-6 flex flex-col gap-2 min-[380px]:flex-row">
+      <ul className="mt-6 grid gap-2 text-left text-sm text-muted-foreground">
+        {points.map((p) => (
+          <li key={p} className="flex items-center gap-2.5">
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10">
+              <Check className="size-3 text-primary" strokeWidth={3} />
+            </span>
+            {p}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-7 flex flex-col gap-2 min-[380px]:flex-row">
         <Button onClick={onBrowse} className="min-h-11">
           <ImageUp className="size-4" />
           Choose a photo
@@ -2101,7 +1721,6 @@ function ProcessingState() {
       <p className="mt-1 text-sm text-muted-foreground">
         Runs entirely on this device — usually takes a couple of seconds.
       </p>
-      {/* Skeleton hints the shape of the result so the wait feels shorter */}
       <div aria-hidden className="mt-7 w-full max-w-xs space-y-3">
         <div className="shimmer h-2.5 w-full rounded-full" />
         <div className="shimmer mx-auto h-2.5 w-3/4 rounded-full" />
