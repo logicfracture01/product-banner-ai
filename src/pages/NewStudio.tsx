@@ -70,6 +70,10 @@ import { cn } from '@/lib/utils';
 type ViewMode = 'start' | 'editor' | 'results';
 type StageState = 'idle' | 'processing' | 'ready' | 'error';
 type RatioKey = '1:1' | '4:5' | '16:9' | '3:4' | 'custom';
+
+/** Stable ordered ratio keys used in the ratio picker so we never inline an
+ * unsafe `as RatioKey[]` cast in JSX. */
+const RatioKeyValues: RatioKey[] = ['1:1', '4:5', '16:9', '3:4', 'custom'];
 type StyleKey =
   | 'plain'
   | 'softshadow'
@@ -937,7 +941,7 @@ export default function NewStudio() {
                     Output ratio
                   </h3>
                   <div className="mt-3 grid grid-cols-3 gap-2">
-                    {(['1:1', '4:5', '16:9', '3:4', 'custom') as RatioKey[]}.map((r) => (
+                    {RatioKeyValues.map((r) => (
                       <button
                         key={r}
                         onClick={() => {

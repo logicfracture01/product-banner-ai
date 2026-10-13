@@ -1277,22 +1277,22 @@ export default function Studio() {
                   value={shadow.opacity * 100}
                   min={0}
                   max={100}
-                  step={5}
-                  suffix="%"
-                  onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
-                />
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Contact shadow</span>
-                  <span className="font-medium text-foreground">                          {shadow.contact ? 'On' : 'Off'}</span>
-                </div>
-              </div>
+                  step={5}                   suffix="%"
+                   onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
+                 />
+                 <div className="flex items-center justify-between text-xs text-muted-foreground">
+                   <span>Contact shadow</span>
+                   <span className="font-medium text-foreground">{shadow.contact ? 'On' : 'Off'}</span>
+                 </div>
+               </div>
             </Card>
-            <Card className="p-5">                <div className="mb-3 flex items-center gap-2">
-                  <Download className="size-4 text-primary" />
-                  <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
-                    6. Export
-                  </h2>
-              </div>
+            <Card className="p-5">
+              <div className="mb-3 flex items-center gap-2">
+                 <Download className="size-4 text-primary" />
+                 <h2 className="font-display text-sm font-semibold tracking-wide uppercase">
+                   6. Export
+                 </h2>
+               </div>
               <div className="grid grid-cols-2 gap-2">
                 <Button
                   className="min-h-10"
@@ -1367,25 +1367,98 @@ export default function Studio() {
                   <AlertTriangle className="size-5" />
                 </div>
                 <p className="mt-4 font-display text-lg font-semibold">Couldn't isolate a product</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {fitWarning
-                    ? "The whole photo was kept — try a cleaner shot."
-                    : "Try a clearer photo, or drop it again."}
-                </p>
-                <Button className="mt-6" size="lg" asChild>
-                  <Link to="#" onClick={(e) => { e.preventDefault(); reset(); }}>
-                    <RotateCcw className="size-4" />
-                    Try another photo
-                  </Link>
-                </Button>
+                <p className="mt-1 text-sm text-muted-foreground">                   {fitWarning
+                      ? "The whole photo was kept — try a cleaner shot."
+                      : "Try a clearer photo, or drop it again."}
+                   </p>
+                 </div>
+
+              </>                 )}
+                {stage === 'ready' && (
+              <div
+                role="region"
+                aria-label="Banner preview"
+                className="relative flex flex-1 flex-col rounded-2xl border border-border/70 bg-card overflow-hidden"
+              >
+                <div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <span className="size-2 rounded-full bg-brand/60" />
+                    Preview
+                    <span className="ml-2 hidden sm:inline">· {getRatio(ratio).label} · {getRatio(ratio).w}×{getRatio(ratio).h}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setView('compare')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'compare' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      Compare
+                    </button>
+                    <button
+                      onClick={() => setView('after')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'after' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      Banner
+                    </button>
+                    <button
+                      onClick={() => setView('before')}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                        view === 'before' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                      )}
+                    >
+                      Source
+                    </button>
+                  </div>
+                </div>
+
+                {/* preview stage */}
+                {stage === 'empty' && (
+                  <EmptyState onBrowse={() => inputRef.current?.click()} onSample={() => void loadSample()} />
+                )}
+                {stage === 'processing' && <ProcessingState />}
+                {stage === 'error' && (
+                  <div className="flex flex-1 flex-col items-center justify-center bg-muted/40 rounded-2xl text-center p-12">
+                    <div className="flex size-10 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                      <AlertTriangle className="size-5" />
+                    </div>
+                    <p className="mt-4 font-display text-lg font-semibold">Couldn't isolate a product</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {fitWarning
+                        ? "The whole photo was kept — try a cleaner shot."
+                        : "Try a clearer photo, or drop it again."}
+                    </p>
+                    <div className="mt-6 flex flex-wrap gap-3">
+                      <Button size="lg" onClick={retrySegmentation}>
+                        <RotateCcw className="size-4" />
+                        Retry
+                      </Button>
+                      <Button variant="outline" size="lg" onClick={() => inputRef.current?.click()}>
+                        <ImageUp className="size-4" />
+                        Another photo
+                      </Button>
+                    </div>
+                    {edgeWarning && (
+                      <p className="mt-3 text-xs text-destructive">
+                        The product touches the photo edge — leave a little margin around it.
+                      </p>
+                    )}
+                  </div>
+                )}                 {stage === 'ready' && (
+                   <>
+
                 {edgeWarning && (
                   <p className="mt-3 text-xs text-destructive">
                     The product touches the photo edge — leave a little margin around it.
                   </p>
                 )}
-              </div>
-            )}
-            {stage === 'ready' && (
+              </div>                 )}
+                {stage === 'ready' && (
               <div
                 role="region"
                 aria-label="Banner preview"
@@ -1489,50 +1562,55 @@ function SliderRow({
     </div>
   );
 }
-                  value={Math.round(shadow.length * 100)}
-                  min={10}
-                  max={140}
-                  suffix="%"
-                  onChange={(v) => setShadow({ ...shadow, length: v / 100 })}
-                />
-                <SliderRow
-                  label="Softness"
-                  value={Math.round(shadow.softness * 100)}
-                  min={0}
-                  max={100}
-                  suffix="%"
-                  onChange={(v) => setShadow({ ...shadow, softness: v / 100 })}
-                />
-                <SliderRow
-                  label="Strength"
-                  value={Math.round(shadow.opacity * 100)}
-                  min={10}
-                  max={80}
-                  suffix="%"
-                  onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
-                />
-                <button
-                  onClick={() => setShadow({ ...shadow, contact: !shadow.contact })}
-                  role="switch"
-                  aria-checked={shadow.contact}
-                  className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+
+            {/* shadow tuning */}
+            <div className="mt-4 space-y-4">
+              <SliderRow
+                label="Cast length"
+                value={Math.round(shadow.length * 100)}
+                min={10}
+                max={140}
+                suffix="%"
+                onChange={(v) => setShadow({ ...shadow, length: v / 100 })}
+              />
+              <SliderRow
+                label="Softness"
+                value={Math.round(shadow.softness * 100)}
+                min={0}
+                max={100}
+                suffix="%"
+                onChange={(v) => setShadow({ ...shadow, softness: v / 100 })}
+              />
+              <SliderRow
+                label="Strength"
+                value={Math.round(shadow.opacity * 100)}
+                min={10}
+                max={80}
+                suffix="%"
+                onChange={(v) => setShadow({ ...shadow, opacity: v / 100 })}
+              />
+              <button
+                onClick={() => setShadow({ ...shadow, contact: !shadow.contact })}
+                role="switch"
+                aria-checked={shadow.contact}
+                className="flex min-h-11 w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <span className="text-muted-foreground">Contact shadow</span>
+                <span
+                  className={cn(
+                    "relative h-5 w-9 rounded-full transition-colors",
+                    shadow.contact ? "bg-primary" : "bg-muted",
+                  )}
                 >
-                  <span className="text-muted-foreground">Contact shadow</span>
                   <span
                     className={cn(
-                      "relative h-5 w-9 rounded-full transition-colors",
-                      shadow.contact ? "bg-primary" : "bg-muted",
+                      "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
+                      shadow.contact ? "left-[18px]" : "left-0.5",
                     )}
-                  >
-                    <span
-                      className={cn(
-                        "absolute top-0.5 size-4 rounded-full bg-white shadow transition-all",
-                        shadow.contact ? "left-[18px]" : "left-0.5",
-                      )}
-                    />
-                  </span>
-                </button>
-              </div>
+                  />
+                </span>
+              </button>
+            </div>
             </Card>
 
             {/* cutout tuning */}
