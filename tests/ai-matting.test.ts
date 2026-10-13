@@ -1,7 +1,7 @@
 // Tests for the AI matting integration data path (pure parts — no model).
 import { describe, expect, test } from "bun:test";
 
-import { matteToCutout, type MattingResult } from "../src/lib/pipeline/aiMatting";
+import { matteToCutout, type MattingResult } from "../src/lib/pipeline/segmentation/aiMatting";
 
 function sourceImage(w: number, h: number): { data: Uint8ClampedArray; width: number; height: number } {
   const data = new Uint8ClampedArray(w * h * 4);

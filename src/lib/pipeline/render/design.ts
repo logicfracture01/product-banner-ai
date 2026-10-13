@@ -6,7 +6,7 @@
 // the product.
 // ============================================================================
 
-import type { StyleAnalysis } from './styles';
+import type { StyleAnalysis } from '../analysis/styles';
 
 const GRAIN_TILE_SIZE = 96;
 const grainTileCache = new Map<string, HTMLCanvasElement>();

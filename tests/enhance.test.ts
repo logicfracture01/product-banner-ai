@@ -7,7 +7,7 @@
 // 0 in a Uint8ClampedArray. These tests pin the stride handling down.
 import { describe, expect, test } from "bun:test";
 
-import { enhanceImage, type EnhancePlan } from "../src/lib/pipeline/enhance";
+import { enhanceImage, type EnhancePlan } from "../src/lib/pipeline/core/enhance";
 
 function photo(w: number, h: number): { rgba: Uint8ClampedArray; width: number; height: number } {
   const rgba = new Uint8ClampedArray(w * h * 4);

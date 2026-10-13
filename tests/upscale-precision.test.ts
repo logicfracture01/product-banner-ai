@@ -3,7 +3,7 @@
 // of the interpolation/sharpening pipeline.
 import { describe, expect, test } from "bun:test";
 
-import { upscaleImage } from "../src/lib/pipeline/upscale";
+import { upscaleImage } from "../src/lib/pipeline/core/upscale";
 
 function constImage(w: number, h: number, r: number, g: number, b: number): Uint8ClampedArray {
   const src = new Uint8ClampedArray(w * h * 4);

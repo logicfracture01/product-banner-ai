@@ -4,7 +4,7 @@
 // Run with: bun test tests/
 import { describe, expect, test } from "bun:test";
 
-import { segment, type Cutout } from "../src/lib/pipeline/segment";
+import { segment, type Cutout } from "../src/lib/pipeline/segmentation/segment";
 
 type RGB = [number, number, number];
 

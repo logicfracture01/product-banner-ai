@@ -336,7 +336,7 @@ export function boxCutout(
   w: number,
   h: number,
   box: { x: number; y: number; w: number; h: number }
-): import('./segmentation').Cutout {
+): import('../segmentation/segment').Cutout {
   const alpha = new Uint8ClampedArray(w * h * 4);
   const feather = 2;
   const { x, y, w: bw, h: bh } = box;
@@ -372,7 +372,7 @@ export type DemoRender = { url: string; revoke: () => void };
 
 export async function renderDemoAfter(
   place: { x: number; y: number; scale: number },
-  opts: { backdrop: string; shadow: import('./shadow').ShadowOptions }
+  opts: { backdrop: string; shadow: import('../render/shadow').ShadowOptions }
 ): Promise<DemoRender> {
   const before = getDemoBefore();
   const img = new Image();
@@ -390,7 +390,7 @@ export async function renderDemoAfter(
   ctx.drawImage(img, 0, 0);
   const data = ctx.getImageData(0, 0, cv.width, cv.height);
   
-  const { segment } = await import('./segmentation');
+  const { segment } = await import('../segmentation/segment');
   const cutout = segment(data.data, cv.width, cv.height, { tolerance: 30 });
   
   const finalCutout = isDegenerateCutout(cutout.box, cv.width, cv.height)
@@ -402,7 +402,7 @@ export async function renderDemoAfter(
   out.height = 1350;
   const octx = out.getContext('2d')!;
   
-  const { drawBanner } = await import('./banner');
+  const { drawBanner } = await import('../render/banner');
   drawBanner(octx, finalCutout, place, {
     backdrop: opts.backdrop as never,
     ratio: '4:5',
@@ -414,7 +414,7 @@ export async function renderDemoAfter(
 
 export async function renderSampleBanner(
   bitmap: ImageBitmap,
-  opts: { backdrop: string; shadow: import('./shadow').ShadowOptions },
+  opts: { backdrop: string; shadow: import('../render/shadow').ShadowOptions },
   maxSide = 720
 ): Promise<{ beforeUrl: string; render: DemoRender } | null> {
   const s = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
@@ -431,7 +431,7 @@ export async function renderSampleBanner(
   
   const data = ctx.getImageData(0, 0, w, h);
   
-  const { segment } = await import('./segmentation');
+  const { segment } = await import('../segmentation/segment');
   const cutout = segment(data.data, w, h, { tolerance: 30 });
   
   if (cutout.box.w <= 0 || cutout.box.h <= 0) return null;
@@ -442,7 +442,7 @@ export async function renderSampleBanner(
   out.height = 1350;
   const octx = out.getContext('2d')!;
   
-  const { autoPlacement, drawBanner } = await import('./banner');
+  const { autoPlacement, drawBanner } = await import('../render/banner');
   const place = autoPlacement(cutout, out.width, out.height);
   
   drawBanner(octx, cutout, place, {

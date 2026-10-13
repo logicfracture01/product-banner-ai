@@ -95,7 +95,7 @@ ffmpeg -hide_banner -v error -i video/relight-demo.mp4 -f null -   # decode chec
 ## Background-removal approach (what we use and why)
 
 The studio's built-in segmenter is a small custom pipeline
-(`src/lib/pipeline/segment.ts`) designed to run offline with no model download:
+(`src/lib/pipeline/segmentation/segment.ts`) designed to run offline with no model download:
 a border-ring k-means background model, edge-guided flood fill, connected-
 component selection, and a signed-distance alpha matte. For a quick demo that
 is fine, but for a messy product shot — e.g. the coffee-mug-on-wooden-desk

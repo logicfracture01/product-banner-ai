@@ -12,11 +12,11 @@
 //   8. styles.ts          - Output style definitions and recommendations
 // ============================================================================
 
-export * from './objectDetection';
-export * from './segmentation';
-export * from './aiMatting';
-export * from './upscale';
-export * from './shadow';
-export * from './design';
-export * from './banner';
-export * from './styles';
+export * from './analysis/objectDetection';
+export * from './analysis/styles';
+export * from './segmentation/segment';
+export * from './segmentation/aiMatting';
+export * from './core/upscale';
+export * from './render/shadow';
+export * from './render/design';
+export * from './render/banner';

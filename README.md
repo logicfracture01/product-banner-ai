@@ -37,6 +37,40 @@ photo ──► ① AI matting ──► ② refinement ──► ③ shadow eng
 
 Everything runs on-device. Photos never leave the browser.
 
+## Project layout
+
+```
+src/
+  main.tsx                  app entry (Vite) — providers, router, theme
+  index.css                 design tokens (Tailwind v4) + theme utilities
+  pages/                    route screens (Landing, Dashboard, Studio, NotFound)
+  components/               shared UI (Logo, ThemeToggle, BeforeAfterSlider)
+    ui/                     shadcn/ui primitives
+  hooks/                    useAuth, useTheme, useIsMobile
+  convex/                   Convex schema + functions + auth (backend)
+  lib/
+    pipeline/               on-device image pipeline (see below)
+    utils.ts                cn() + small helpers
+    vly-integrations.ts     VLY integrations client
+  types/                    ambient module declarations
+
+tests/                      pipeline regression suite (`bun test tests/`)
+tools/                      dev/deploy scripts (demo video, Deno serve shim)
+video/                      demo-video sources + generated media
+pipeline_py/               standalone Python port of the pipeline (+ pytest)
+```
+
+`src/lib/pipeline/` is grouped by stage:
+
+```
+core/           shared primitives + image filters (pixels, upscale, enhance, renderTypes)
+analysis/       object detection, MediaPipe assets, product analysis + style scoring
+segmentation/   custom edge-guided engine + BiRefNet matting (+ workers/clients)
+render/         shadow engine, generative design, backdrop + banner compositor
+samples/        procedural demo scene + real sample photos
+index.ts        public barrel
+```
+
 ## Open source & licenses
 
 This project only builds on permissively-licensed work:
@@ -58,7 +92,7 @@ imgly/background-removal-js (AGPL — viral copyleft), briaai/RMBG
 ```bash
 bun install
 bun run dev        # dev server
-bun run test       # 64-test pipeline suite (IoU, physics, precision invariants)
+bun run test       # 93-test pipeline suite (IoU, physics, precision invariants)
 bun tsc -b --noEmit
 ```
 

@@ -33,38 +33,38 @@ import {
   type BackdropId,
   type Placement,
   type RatioId,
-} from "@/lib/pipeline/banner";
-import { DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/demo";
-import { loadSample as loadSamplePhoto, type SamplePhoto } from "@/lib/pipeline/samplePhotos";
+} from "@/lib/pipeline/render/banner";
+import { DEMO_FALLBACK_BOX, boxCutout, isDegenerateCutout } from "@/lib/pipeline/samples/demo";
+import { loadSample as loadSamplePhoto, type SamplePhoto } from "@/lib/pipeline/samples/samplePhotos";
 import {
   generateDesign,
   paintDesign,
   randomSeed,
   type GeneratedDesign,
-} from "@/lib/pipeline/design";
-import { upscaleImage } from "@/lib/pipeline/upscale";
-import { matteToCutout } from "@/lib/pipeline/aiMatting";
+} from "@/lib/pipeline/render/design";
+import { upscaleImage } from "@/lib/pipeline/core/upscale";
+import { matteToCutout } from "@/lib/pipeline/segmentation/aiMatting";
 import {
   boxIoU,
   detectObjects,
   detectionToBox,
   primaryDetection,
   type DetectResult,
-} from "@/lib/pipeline/objectDetection";
+} from "@/lib/pipeline/analysis/objectDetection";
 import {
   aiMatteAsync,
   preloadMatting,
   setMattingProgressListener,
-} from "@/lib/pipeline/aiMattingClient";
+} from "@/lib/pipeline/segmentation/aiMattingClient";
 import {
   paintShadow,
   renderShadowIntensity,
   toneMapShadow,
   DEFAULT_SHADOW,
   type ShadowOptions,
-} from "@/lib/pipeline/shadow";
-import { segmentAsync } from "@/lib/pipeline/segmentClient";
-import type { Cutout } from "@/lib/pipeline/segment";
+} from "@/lib/pipeline/render/shadow";
+import { segmentAsync } from "@/lib/pipeline/segmentation/segmentClient";
+import type { Cutout } from "@/lib/pipeline/segmentation/segment";
 import {
   analyzeCutout,
   getStyle,
@@ -72,7 +72,7 @@ import {
   recommendStyles,
   type OutputStyleId,
   type StyleAnalysis,
-} from "@/lib/pipeline/styles";
+} from "@/lib/pipeline/analysis/styles";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,

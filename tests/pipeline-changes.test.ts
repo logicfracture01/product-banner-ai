@@ -3,15 +3,15 @@
 // renderer's math. Run with: bun test tests/
 import { describe, expect, test } from "bun:test";
 
-import type { Cutout } from "../src/lib/pipeline/segment";
-import { segment } from "../src/lib/pipeline/segment";
-import { renderShadow, DEFAULT_SHADOW } from "../src/lib/pipeline/shadow";
+import type { Cutout } from "../src/lib/pipeline/segmentation/segment";
+import { segment } from "../src/lib/pipeline/segmentation/segment";
+import { renderShadow, DEFAULT_SHADOW } from "../src/lib/pipeline/render/shadow";
 import {
   analyzeCutout,
   getStyle,
   OUTPUT_STYLES,
   recommendStyles,
-} from "../src/lib/pipeline/styles";
+} from "../src/lib/pipeline/analysis/styles";
 
 // --------------------------------------------------------------- fixtures
 

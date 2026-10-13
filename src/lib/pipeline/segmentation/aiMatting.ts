@@ -12,7 +12,7 @@ export type MattingResult = {
   confidence: number;        // Mean model confidence in foreground
 };
 
-import type { Cutout } from './segmentation';
+import type { Cutout } from './segment';
 
 export function matteToCutout(
   source: { data: Uint8ClampedArray; width: number; height: number },

@@ -2,10 +2,10 @@
 // and the edge-decontamination overhaul.
 import { describe, expect, test } from "bun:test";
 
-import { upscaleImage } from "../src/lib/pipeline/upscale";
-import { generateDesign, makeRng, randomSeed } from "../src/lib/pipeline/design";
-import { analyzeCutout, recommendStyles } from "../src/lib/pipeline/styles";
-import type { Cutout } from "../src/lib/pipeline/segment";
+import { upscaleImage } from "../src/lib/pipeline/core/upscale";
+import { generateDesign, makeRng, randomSeed } from "../src/lib/pipeline/render/design";
+import { analyzeCutout, recommendStyles } from "../src/lib/pipeline/analysis/styles";
+import type { Cutout } from "../src/lib/pipeline/segmentation/segment";
 
 // ---------------------------------------------------------------- fixtures
 

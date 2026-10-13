@@ -8,9 +8,9 @@ import {
   getDemoBefore,
   renderDemoAfter,
   renderSampleBanner,
-} from "@/lib/pipeline/demo";
-import { loadSample } from "@/lib/pipeline/samplePhotos";
-import { DEFAULT_SHADOW } from "@/lib/pipeline/shadow";
+} from "@/lib/pipeline/samples/demo";
+import { loadSample } from "@/lib/pipeline/samples/samplePhotos";
+import { DEFAULT_SHADOW } from "@/lib/pipeline/render/shadow";
 import { cn } from "@/lib/utils";
 import { motion, useScroll, useSpring } from "framer-motion";
 import {

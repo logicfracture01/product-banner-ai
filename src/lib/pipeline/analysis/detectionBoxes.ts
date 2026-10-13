@@ -5,7 +5,7 @@
 // model-loading half lives in objectDetection.ts and re-exports these for
 // callers that already depend on it.
 
-import type { DetectedObject } from "./segment";
+import type { DetectedObject } from "../segmentation/segment";
 
 /** A detection in source-pixel coordinates. */
 export interface DetectResult {

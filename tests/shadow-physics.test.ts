@@ -3,14 +3,14 @@
 // monotonicity in the controls, and determinism. Run: bun test tests/
 import { describe, expect, test } from "bun:test";
 
-import type { Cutout } from "../src/lib/pipeline/segment";
+import type { Cutout } from "../src/lib/pipeline/segmentation/segment";
 import {
   renderShadow,
   renderShadowIntensity,
   toneMapShadow,
   DEFAULT_SHADOW,
   type ShadowOptions,
-} from "../src/lib/pipeline/shadow";
+} from "../src/lib/pipeline/render/shadow";
 
 const W = 240;
 const H = 240;

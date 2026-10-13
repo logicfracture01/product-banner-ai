@@ -27,7 +27,7 @@
 // CONTRACT: `alpha` is always FULL FRAME (width × height of the input) so every
 // consumer can index it with source coordinates. `box` carries the framing.
 
-import { clamp255, distanceInside, distanceOutside } from "./pixels";
+import { clamp255, distanceInside, distanceOutside } from "../core/pixels";
 
 export interface Cutout {
   alpha: Uint8ClampedArray;

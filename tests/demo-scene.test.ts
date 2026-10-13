@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEMO_FALLBACK_BOX, isDegenerateCutout } from "../src/lib/pipeline/demo";
+import { DEMO_FALLBACK_BOX, isDegenerateCutout } from "../src/lib/pipeline/samples/demo";
 
 /**
  * The demo scene is procedural, so its geometry is known exactly. These tests

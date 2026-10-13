@@ -7,8 +7,8 @@
 //   3. Two-scale filtering: Sharp at contact, soft away (studio look)
 // ============================================================================
 
-import type { Cutout } from './segmentation';
-import { boxBlur3, distanceInside, distanceOutside, mulberry32 } from './pixels';
+import type { Cutout } from '../segmentation/segment';
+import { boxBlur3, distanceInside, distanceOutside, mulberry32 } from '../core/pixels';
 
 export type ShadowOptions = {
   direction: number;      // Light azimuth in degrees (0 = from right, 90 = from above)

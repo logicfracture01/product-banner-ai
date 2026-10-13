@@ -7,10 +7,10 @@
 //   3. Product cutout
 // ============================================================================
 
-import type { Cutout } from './segmentation';
+import type { Cutout } from '../segmentation/segment';
 import { renderShadowIntensity, toneMapShadow, paintShadow, type ShadowOptions } from './shadow';
 import { paintDesign, type GeneratedDesign } from './design';
-import type { PipelineParams, DetectedFlaw } from './renderTypes';
+import type { PipelineParams, DetectedFlaw } from '../core/renderTypes';
 
 export type BackdropId =
   | 'studio'

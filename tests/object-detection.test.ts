@@ -11,13 +11,13 @@ import {
   pickDetectionAlignedCandidate,
   primaryDetection,
   type DetectResult,
-} from "../src/lib/pipeline/detectionBoxes";
+} from "../src/lib/pipeline/analysis/detectionBoxes";
 import {
   OBJECT_DETECTOR_MODEL_URL,
   TASKS_VISION_VERSION,
   TASKS_VISION_WASM_BASE,
-} from "../src/lib/pipeline/mediapipeAssets";
-import type { DetectedObject } from "../src/lib/pipeline/segment";
+} from "../src/lib/pipeline/analysis/mediapipeAssets";
+import type { DetectedObject } from "../src/lib/pipeline/segmentation/segment";
 
 function det(xMin: number, yMin: number, xMax: number, yMax: number, confidence = 0.9, label = "laptop"): DetectResult {
   return { bbox: { xMin, yMin, xMax, yMax }, confidence, label };
@@ -102,7 +102,7 @@ describe("object detection assets", () => {
 
   test("no local /mediapipe-* asset paths remain (the old, never-shipped config)", async () => {
     const src = await Bun.file(
-      new URL("../src/lib/pipeline/objectDetection.ts", import.meta.url).pathname,
+      new URL("../src/lib/pipeline/analysis/objectDetection.ts", import.meta.url).pathname,
     ).text();
     expect(src).not.toContain('"/mediapipe-tasks-vision');
     expect(src).not.toContain('"/mediapipe-models');

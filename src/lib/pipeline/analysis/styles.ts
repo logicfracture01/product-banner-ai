@@ -2,9 +2,9 @@
 // Styles - Output style definitions and product analysis
 // ============================================================================
 
-import type { Cutout } from './segmentation';
-import { DEFAULT_SHADOW, type ShadowOptions } from './shadow';
-import type { BackdropId } from './banner';
+import type { Cutout } from '../segmentation/segment';
+import { DEFAULT_SHADOW, type ShadowOptions } from '../render/shadow';
+import type { BackdropId } from '../render/banner';
 
 // ----------------------------------------------------------------------------
 // Style definitions
