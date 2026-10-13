@@ -7,6 +7,8 @@ import { BeforeAfterComparison } from "@/components/BeforeAfterComparison";
 
 const BEFORE_IMAGE = "/before-messy.jpg";
 const AFTER_IMAGE = "/after-clean.jpg";
+// If you want the real photos here, replace these paths with the actual image files in public/.
+
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
