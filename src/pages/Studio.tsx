@@ -284,7 +284,7 @@ export default function Studio() {
                   <LoaderCircle className="size-10 animate-spin text-brand" />
                   <h3 className="text-lg font-semibold">Opening your photo…</h3>
                   <p className="text-sm text-muted-foreground text-center">
-                    Se教授ng up the 3D preview.
+Setting up the 3D preview.
                   </p>
                 </motion.div>
               )}
