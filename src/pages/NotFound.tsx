@@ -1,7 +1,6 @@
 import { motion } from "framer-motion";
-import { Button } from "@/components/ui/button";
-import { Logo } from "@/components/Logo";
 import { Link } from "react-router";
+import { Logo } from "@/components/Logo";
 
 export default function NotFound() {
   return (
@@ -13,13 +12,16 @@ export default function NotFound() {
     >
       <div className="flex flex-1 flex-col items-center justify-center px-4">
         <Logo size={40} withWordmark={false} />
-        <h1 className="mt-6 font-display text-6xl font-bold tracking-tight">404</h1>
+        <h1 className="mt-6 font-display text-6xl font-bold tracking-tight">Page not found</h1>
         <p className="mt-2 text-lg text-muted-foreground">
-          This frame didn’t develop.
+          This page doesn’t exist yet.
         </p>
-        <Button asChild className="mt-8">
-          <Link to="/">Back to home</Link>
-        </Button>
+        <Link
+          to="/"
+          className="mt-8 flex h-10 items-center gap-2 rounded-lg bg-brand px-5 text-sm font-medium text-brand-foreground shadow-e2 transition-transform hover:-translate-y-0.5"
+        >
+          Back to home
+        </Link>
       </div>
     </motion.div>
   );

@@ -1,523 +1,226 @@
-import { Logo } from "@/components/Logo";
-import { BeforeAfterSlider } from "@/components/BeforeAfterSlider";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-  DEMO_PLACE,
-  getDemoBefore,
-  renderDemoAfter,
-  renderSampleBanner,
-} from "@/lib/pipeline/samples/demo";
-import { loadSample } from "@/lib/pipeline/samples/samplePhotos";
-import { DEFAULT_SHADOW } from "@/lib/pipeline/render/shadow";
-import { cn } from "@/lib/utils";
-import { motion, useScroll, useSpring } from "framer-motion";
-import {
-  ArrowRight,
-  Check,
-  ChevronRight,
-  Clock,
-  Cpu,
-  Crop,
-  Github,
-  Layers,
-  Lock,
-  Scan,
-  Sparkles,
-  SunMedium,
-  Upload,
-  Wand2,
-  ZoomIn,
-} from "lucide-react";
-import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { Link } from "react-router";
+import ProductStage from "@/components/ProductStage";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { cn } from "@/lib/utils";
+import { ArrowRight, Check, Grid3X3, MousePointer2, RotateCcw, ZoomIn } from "lucide-react";
 
-/** Shared reveal motion: one language for every entrance on the page. */
-const reveal = {
-  initial: { opacity: 0, y: 16, filter: "blur(4px)" },
-  whileInView: { opacity: 1, y: 0, filter: "blur(0px)" },
-  viewport: { once: true, margin: "-80px" },
-  transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] as const },
+const fadeUp = {
+  hidden: { opacity: 0, y: 20 },
+  visible: (delay = 0) => ({
+    opacity: 1,
+    y: 0,
+    transition: { delay, duration: 0.7, ease: [0.22, 1, 0.36, 1] as const },
+  }),
 };
 
-const stagger = (i: number) => ({
-  ...reveal,
-  transition: { ...reveal.transition, delay: 0.06 * i },
+const stagger = (i: number, delay = 0) => ({
+  hidden: { opacity: 0, y: 16 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: { delay: delay + i * 0.08, duration: 0.55, ease: [0.22, 1, 0.36, 1] as const },
+  },
 });
 
-/**
- * Yield to the browser so queued paint/input work runs first. Prefers
- * `requestIdleCallback` (real idle time) and falls back to a macrotask.
- */
-function afterPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof requestIdleCallback === "function") {
-      requestIdleCallback(() => resolve(), { timeout: 250 });
-    } else {
-      setTimeout(resolve, 0);
-    }
-  });
-}
-
 export default function Landing() {
-  const [before, setBefore] = useState<string | null>(null);
-  const [after, setAfter] = useState<string | null>(null);
-  const [demoState, setDemoState] = useState<"working" | "ready" | "error">("working");
-
-  useEffect(() => {
-    let alive = true;
-    let revoke: (() => void) | null = null;
-    (async () => {
-      try {
-        // Keep the first paint completely free: the demo builds a scene,
-        // segments it and composites a 1080×1350 banner. None of that should
-        // compete with the hero painting.
-        await afterPaint();
-
-        // Prefer a REAL photograph of a real product — the hero is the app's
-        // central claim, and a drawn scene can't demonstrate it. `loadSample`
-        // resolves to the procedural scene when the CDN is unreachable, and
-        // `renderSampleBanner` returns null when the segmenter leaked across the
-        // whole frame, so both failure modes land on the deterministic path
-        // below instead of on a broken hero.
-        try {
-          const sample = await loadSample();
-          if (!alive) return;
-          if (!sample.procedural) {
-            const composed = await renderSampleBanner(sample.bitmap, {
-              backdrop: "studio",
-              shadow: DEFAULT_SHADOW,
-            });
-            if (!alive) {
-              composed?.render.revoke();
-              return;
-            }
-            if (composed) {
-              revoke = composed.render.revoke;
-              setBefore(composed.beforeUrl);
-              setAfter(composed.render.url);
-              setDemoState("ready");
-              return;
-            }
-          }
-        } catch (err) {
-          console.warn("real-photo hero failed; using the procedural scene", err);
-        }
-        if (!alive) return;
-
-        const b = getDemoBefore();
-        setBefore(b);
-        await afterPaint();
-        const render = await renderDemoAfter(DEMO_PLACE, {
-          backdrop: "studio",
-          shadow: DEFAULT_SHADOW,
-        });
-        if (!alive) {
-          render.revoke();
-          return;
-        }
-        revoke = render.revoke;
-        setAfter(render.url);
-        setDemoState("ready");
-      } catch (err) {
-        console.error("demo pipeline failed", err);
-        if (alive) setDemoState("error");
-      }
-    })();
-    return () => {
-      alive = false;
-      revoke?.();
-    };
-  }, []);
-
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Nav />
-      <main>
-        <Hero before={before} after={after} demoState={demoState} />
-        <MarketStrip />
-        <HowItWorks />
-        <PipelineDive />
-        <Outputs />
-        <Audience />
-        <Faq />
-        <FinalCta />
-      </main>
+      <Hero />
+      <Proof />
+      <How />
+      <Modes />
+      <BeforeAfter />
+      <Final />
       <Footer />
     </div>
   );
 }
 
-// ---------------------------------------------------------------- Nav
-
 function Nav() {
-  const bar = useSpring(useScroll().scrollYProgress, {
-    stiffness: 140,
-    damping: 28,
-    restDelta: 0.001,
-  });
-
   return (
-    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link
-          to="/"
-          className="rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        >
-          <Logo size={30} animated />
+    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
+      <div className="mx-auto flex h-14 items-center justify-between px-5 sm:px-6 lg:max-w-6xl lg:px-8">
+        <Link to="/" className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
+          <span className="inline-flex items-center gap-2.5">
+            <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+              <rect width="64" height="64" rx="15" fill="#15181B" />
+              <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" stroke="#ffffff" strokeOpacity="0.10" strokeWidth="1.25" fill="none" />
+              <path d="M17 15 L33 15 L46 47 L30 47 Z" fill="url(#nav-beam)" />
+              <rect x="20" y="38" width="27" height="11" rx="3.2" fill="url(#nav-card)" />
+              <rect x="14" y="52" width="36" height="2.4" rx="1.2" fill="#ffffff" fillOpacity="0.4" />
+              <defs>
+                <linearGradient id="nav-beam" x1="14" y1="12" x2="42" y2="48">
+                  <stop offset="0" stopColor="#FFE0B0" />
+                  <stop offset="0.6" stopColor="#F4B23E" />
+                  <stop offset="1" stopColor="#F0A02C" stopOpacity="0.12" />
+                </linearGradient>
+                <linearGradient id="nav-card" x1="20" y1="38" x2="46" y2="50">
+                  <stop offset="0" stopColor="#F2D9C4" />
+                  <stop offset="1" stopColor="#D9B29A" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <span className="font-display text-[1.05em] font-semibold tracking-[-0.03em]">Relight</span>
+          </span>
         </Link>
-        <nav className="hidden items-center gap-7 text-sm text-muted-foreground md:flex">
-          <a className="transition-colors hover:text-foreground" href="#how">
-            How it works
-          </a>
-          <a className="transition-colors hover:text-foreground" href="#pipeline">
-            Pipeline
-          </a>
-          <a className="transition-colors hover:text-foreground" href="#outputs">
-            Outputs
-          </a>
-          <a className="transition-colors hover:text-foreground" href="#faq">
-            FAQ
-          </a>
+        <nav className="hidden items-center gap-6 text-sm text-muted-foreground md:flex">
+          <a className="transition-colors hover:text-foreground" href="#proof">Why it works</a>
+          <a className="transition-colors hover:text-foreground" href="#how">How it works</a>
+          <a className="transition-colors hover:text-foreground" href="#modes">Studio</a>
         </nav>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
           <ThemeToggle />
-          <Button size="sm" asChild className="shadow-e1">
-            <Link to="/studio">
-              Open studio
-              <ArrowRight className="size-4" />
-            </Link>
-          </Button>
+          <Link
+            to="/studio"
+            className="flex h-9 items-center gap-2 rounded-lg bg-foreground px-5 text-sm font-medium text-background shadow-e2 transition-transform hover:-translate-y-0.5"
+          >
+            Open the studio
+            <ArrowRight className="size-4" />
+          </Link>
         </div>
       </div>
-      {/* scroll progress — a thin, quiet indicator instead of a jumping bar */}
-      <motion.div
-        aria-hidden
-        style={{ scaleX: bar }}
-        className="h-px origin-left bg-gradient-to-r from-primary via-brand to-primary"
-      />
     </header>
   );
 }
 
-// ---------------------------------------------------------------- Hero
-
-function Hero({
-  before,
-  after,
-  demoState,
-}: {
-  before: string | null;
-  after: string | null;
-  demoState: "working" | "ready" | "error";
-}) {
+function Hero() {
   return (
-    <section className="relative overflow-hidden">
-      {/* ambient key light */}
+    <section className="relative overflow-hidden pt-20 pb-24 sm:pt-24 sm:pb-28 lg:pt-28 lg:pb-32">
       <div aria-hidden className="pointer-events-none absolute inset-0">
-        <div className="animate-wash absolute -top-40 left-1/2 h-[460px] w-[820px] -translate-x-1/2 rounded-full bg-primary/12 blur-3xl" />
-        <div className="animate-wash absolute top-52 right-[-140px] h-80 w-80 rounded-full bg-brand/12 blur-3xl [animation-delay:-4s]" />
+        <div className="absolute top-0 right-0 h-[50vh] w-[60vw] rounded-full bg-brand/10 blur-3xl" />
+        <div className="absolute -bottom-20 left-0 h-72 w-72 rounded-full bg-brand/8 blur-3xl" />
       </div>
 
-      <div className="relative mx-auto grid w-full max-w-6xl items-center gap-14 px-4 pt-14 pb-20 sm:px-6 lg:grid-cols-[1.02fr_0.98fr] lg:pt-20 lg:pb-24">
-        <div>
-          <motion.div {...reveal}>
-            <Badge
-              variant="outline"
-              className="gap-2 rounded-full border-border/80 bg-card/70 px-3 py-1 text-[11px] font-medium tracking-wide text-muted-foreground backdrop-blur"
-            >
-              <span className="relative flex size-1.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
-                <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
-              </span>
-              Live pipeline · runs entirely in your browser
-            </Badge>
+      <div className="relative mx-auto grid w-full max-w-6xl items-center gap-12 px-5 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:pt-8">
+        <div className="space-y-6">
+          <motion.div
+            variants={fadeUp}
+            initial="hidden"
+            animate="visible"
+            className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/60 px-3.5 py-1.5 text-xs font-medium text-muted-foreground shadow-e1 backdrop-blur-sm"
+          >
+            <span className="relative flex size-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand/70" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-brand" />
+            </span>
+            Free. Private. On-device.
           </motion.div>
 
           <motion.h1
-            {...stagger(1)}
-            className="mt-6 font-display text-[2.6rem] leading-[1.03] font-bold tracking-tight sm:text-6xl lg:text-[4.1rem]"
+            variants={stagger(0)}
+            initial="hidden"
+            animate="visible"
+            className="font-display text-5xl tracking-tight sm:text-6xl lg:text-7xl font-semibold"
           >
-            Messy phone photo in.
-            <br />
-            <span className="text-gradient">Studio banner out.</span>
+            Your product, out of the mess.
           </motion.h1>
 
           <motion.p
-            {...stagger(2)}
-            className="mt-6 max-w-xl text-[17px] leading-8 text-muted-foreground"
+            variants={stagger(1)}
+            initial="hidden"
+            animate="visible"
+            className="max-w-lg text-[17px] leading-7 text-muted-foreground sm:text-[18px]"
           >
-            Relight lifts your product out of any cluttered snapshot, drops it on a
-            studio surface, and paints a{" "}
-            <span className="font-medium text-foreground">physically-plausible cast
-            shadow</span>{" "}
-            with our own rendering math — in about two seconds, with your photo never
-            leaving the device.
+            Drop a cluttered phone photo of a product into the studio. Relight lifts it
+            onto a clean surface and paints a believable cast shadow in seconds — entirely
+            in your browser, nothing uploaded.
           </motion.p>
 
-          <motion.div {...stagger(3)} className="mt-9 flex flex-wrap items-center gap-3">
-            <Button
-              size="lg"
-              asChild
-              className="h-12 px-6 text-[15px] shadow-e2 transition-transform duration-200 hover:-translate-y-0.5"
+          <motion.div
+            variants={stagger(2)}
+            initial="hidden"
+            animate="visible"
+            className="flex flex-wrap items-center gap-4 pt-2"
+          >
+            <Link
+              to="/studio"
+              className="flex h-11 items-center gap-2 rounded-lg bg-brand px-6 text-sm font-medium text-brand-foreground shadow-e2 transition-transform hover:-translate-y-0.5"
             >
-              <Link to="/studio">
-                Clean your first photo
-                <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-            <Button size="lg" variant="outline" asChild className="h-12 px-6 text-[15px]">
-              <Link to="/studio">
-                <Sparkles className="size-4 text-brand" />
-                Try the live sample
-              </Link>
-            </Button>
+              Open the studio
+              <ArrowRight className="size-4" />
+            </Link>
+            <a
+              href="#proof"
+              className="flex h-11 items-center gap-2 rounded-lg border border-border bg-card px-6 text-sm font-medium text-foreground shadow-e1 transition-colors hover:bg-secondary"
+            >
+              See why
+            </a>
           </motion.div>
 
-          <motion.ul
-            {...stagger(4)}
-            className="mt-9 grid max-w-lg gap-2.5 text-sm text-muted-foreground sm:grid-cols-2"
+          <motion.p
+            variants={stagger(3)}
+            initial="hidden"
+            animate="visible"
+            className="text-xs text-muted-foreground"
           >
-            {[
-              { icon: Lock, label: "Photos never leave your device" },
-              { icon: Cpu, label: "No wrapped AI API calls" },
-              { icon: ZoomIn, label: "2×/3× detail-preserving upscale" },
-              { icon: Clock, label: "Free during launch" },
-            ].map((f) => (
-              <li key={f.label} className="flex items-center gap-2.5">
-                <f.icon className="size-4 shrink-0 text-primary" />
-                {f.label}
-              </li>
-            ))}
-          </motion.ul>
+            No sign-up. No accounts. Works offline after the first load.
+          </motion.p>
         </div>
 
-        <motion.div {...stagger(2)} className="relative">
-          <div
-            aria-hidden
-            className="absolute -inset-4 rounded-[2.25rem] bg-gradient-to-br from-primary/15 via-transparent to-brand/15 blur-md"
-          />
-          <div className="edge-top relative overflow-hidden rounded-2xl border border-border/70 bg-card p-3 shadow-e3">
-            <div className="mb-2.5 flex items-center justify-between px-1.5 pt-1.5">
-              <div className="flex items-center gap-2">
-                <span className="size-2.5 rounded-full bg-brand/80" />
-                <span className="size-2.5 rounded-full bg-border" />
-                <span className="size-2.5 rounded-full bg-border" />
-                <span className="ml-2 text-xs font-medium text-muted-foreground">
-                  relight · studio
-                </span>
-              </div>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wider",
-                  demoState === "ready" && "bg-primary/10 text-primary",
-                  demoState === "working" && "bg-muted text-muted-foreground",
-                  demoState === "error" && "bg-destructive/10 text-destructive",
-                )}
-              >
-                {demoState === "ready" && "RENDERED"}
-                {demoState === "working" && "RENDERING…"}
-                {demoState === "error" && "UNAVAILABLE"}
-              </span>
-            </div>
-            <div className="relative">
-              <BeforeAfterSlider before={before} after={after} className="shadow-inner" />
-              {demoState === "working" && (
-                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl bg-card/75 backdrop-blur-[2px]">
-                  <span className="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  <span className="text-sm text-muted-foreground">
-                    Cutting, lighting, shadowing…
-                  </span>
-                </div>
-              )}
-              {demoState === "error" && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-muted/70 px-6 text-center text-sm text-muted-foreground">
-                  Demo preview unavailable on this device — the studio still works.
-                </div>
-              )}
-            </div>
-            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 px-1.5 pb-1">
-              <p className="text-xs text-muted-foreground">
-                Drag the handle — that “after” was rendered by the real pipeline.
-              </p>
-              <span className="inline-flex items-center gap-1 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
-                <Scan className="size-3" />
-                4:5 · 1080×1350
-              </span>
-            </div>
-          </div>
-        </motion.div>
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------- Market strip
-
-/** Quiet marquee of the marketplaces and formats the exports target. */
-function MarketStrip() {
-  const items = [
-    "Vinted · 4:5 feed",
-    "Depop · 4:5 feed",
-    "eBay · 1:1",
-    "Etsy · 1:1",
-    "Shop banner · 16:9",
-    "Instagram · 4:5",
-    "Amazon · 1:1",
-    "Etsy shop · 16:9",
-  ];
-  // Two identical tracks each translating -100% of their own width: the seam
-  // lands exactly on the copy boundary, so the loop has no visible jump.
-  const track = (key: string) => (
-    <div className="animate-marquee flex shrink-0 items-center" aria-hidden={key === "b"}>
-      {items.map((t) => (
-        <span
-          key={t}
-          className="inline-flex items-center gap-2.5 px-5 whitespace-nowrap text-[13px] font-medium text-muted-foreground"
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          animate="visible"
+          transition={{ delay: 0.25 }}
+          className="shrink-0"
         >
-          <Check className="size-3.5 text-primary" />
-          {t}
-        </span>
-      ))}
-    </div>
-  );
-  return (
-    <section className="border-y border-border/60 bg-card/40">
-      <div className="relative flex overflow-hidden py-4">
-        <div className="flex min-w-0 shrink-0">{track("a")}{track("b")}</div>
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-background to-transparent"
-        />
+          <div className="mx-auto max-w-[220px]">
+            <ProductStage rotation="float" size={220} />
+          </div>
+          <p className="mt-5 text-center text-xs text-muted-foreground">
+            Live 3D preview — drag to inspect
+          </p>
+        </motion.div>
       </div>
     </section>
   );
 }
 
-// ---------------------------------------------------------------- How it works
-
-function HowItWorks() {
-  const steps = [
-    {
-      icon: Upload,
-      title: "Drop a messy photo",
-      body: "A laptop on a sunlit deck, a sneaker on the floor — if a human can find the product, Relight can too.",
-    },
-    {
-      icon: Crop,
-      title: "We cut it out",
-      body: "An AI matte finds the silhouette, then edge-guided segmentation feathers it so it sits on the new surface without halos.",
-    },
-    {
-      icon: Layers,
-      title: "Pick a surface",
-      body: "Five studio backdrops plus a generative mode that composes a unique scene from your product's own palette.",
-    },
-    {
-      icon: SunMedium,
-      title: "We paint the light",
-      body: "A custom shadow engine places a contact ring and a directional cast that grounds the product like real light.",
-    },
-  ];
+function Proof() {
   return (
-    <Section id="how" eyebrow="How it works" title="Four steps. Two seconds.">
-      <div className="relative mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* connector rail — desktop only, sits behind the cards */}
-        <div
-          aria-hidden
-          className="absolute inset-x-0 top-[3.25rem] hidden h-px bg-gradient-to-r from-transparent via-border to-transparent lg:block"
-        />
-        {steps.map((s, i) => (
-          <motion.div key={s.title} {...stagger(i)} className="relative">
-            <Card className="h-full">
-              <div className="flex items-center gap-3">
-                <div className="relative flex size-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <s.icon className="size-5" />
-                </div>
-                <span className="font-display text-sm font-semibold text-muted-foreground/45">
-                  0{i + 1}
-                </span>
-              </div>
-              <h3 className="mt-5 font-display text-lg font-semibold">{s.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">{s.body}</p>
-            </Card>
-          </motion.div>
-        ))}
-      </div>
-    </Section>
-  );
-}
+    <section id="proof" className="border-t border-border/60 bg-card/40">
+      <div className="mx-auto max-w-6xl px-5 pb-16 pt-14 sm:px-6 lg:px-8">
+        <motion.p
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="text-center text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground"
+        >
+          Why it works
+        </motion.p>
 
-// ---------------------------------------------------------------- Pipeline
-
-function PipelineDive() {
-  const items = [
-    {
-      tag: "matte",
-      icon: Crop,
-      title: "Two-tier cutout",
-      body: "BiRefNet-lite (MIT) runs in a Web Worker for the mask, with a Sobel edge map and adaptive flood fill as the fallback and the fine-tuner. Nothing is sent anywhere.",
-    },
-    {
-      tag: "upscaler",
-      icon: ZoomIn,
-      title: "Detail-preserving upscale",
-      body: "Catmull-Rom bicubic resampling with halo-suppressed unsharp and BT.601 chroma cleanup — soft phone crops regain crisp edges before they are ever cut out.",
-    },
-    {
-      tag: "shadow",
-      icon: SunMedium,
-      title: "Physically-motivated shadows",
-      body: "Contact shadows come from silhouette ambient occlusion; cast shadows are the silhouette heaved along the light vector with height jitter and progressive blur.",
-    },
-    {
-      tag: "compositor",
-      icon: Layers,
-      title: "Studio compositing",
-      body: "Gradient backdrops with top-light falloff, grounding bands, generative scenes seeded from your product's palette, and ratio-aware framing for every marketplace.",
-    },
-  ];
-  return (
-    <section id="pipeline" className="border-y border-border/60 bg-card/40">
-      <div className="mx-auto grid w-full max-w-6xl items-start gap-12 px-4 py-24 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:py-28">
-        <motion.div {...reveal} className="lg:sticky lg:top-28">
-          <Eyebrow>Under the hood</Eyebrow>
-          <h2 className="mt-4 font-display text-3xl leading-[1.1] font-bold tracking-tight sm:text-[2.6rem]">
-            Not a wrapped API.
-            <br />
-            Engine math, on-device.
-          </h2>
-          <p className="mt-5 text-[15px] leading-7 text-muted-foreground">
-            Most tools in this space call a cloud model and hope for the best. Relight's
-            matting, shadow rendering, upscaling and compositing are written from
-            scratch in TypeScript and run entirely in your browser.
-          </p>
-          <div className="mt-7 flex items-center gap-2.5 rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
-            <Clock className="size-4 shrink-0 text-primary" />
-            Full cutout + shadow render: ~2s on a laptop.
-          </div>
-        </motion.div>
-
-        <div className="flex flex-col gap-3">
-          {items.map((it, i) => (
-            <motion.div key={it.title} {...stagger(i)}>
-              <Card>
-                <div className="flex gap-4">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                    <it.icon className="size-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2.5">
-                      <h3 className="font-display text-[17px] font-semibold">{it.title}</h3>
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">
-                        {it.tag}
-                      </span>
-                    </div>
-                    <p className="mt-1.5 text-sm leading-6 text-muted-foreground">{it.body}</p>
-                  </div>
-                </div>
-              </Card>
+        <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            {
+              title: "Nothing leaves your device",
+              body: "The whole pipeline — matting, refinement, shadow, export — runs in the browser. Your photos never hit a server.",
+            },
+            {
+              title: "Real shadows, not fake drops",
+              body: "A coverage-integral shadow engine computes an umbra and penumbra from the silhouette, then filters it. Looks like light, not a blur.",
+            },
+            {
+              title: "One photo, many looks",
+              body: "Try studio white, soft gray, premium desk, moody dark, and a generative scene tuned to your product's palette — all from the same cutout.",
+            },
+            {
+              title: "Built for listings",
+              body: "Export at Instagram, marketplace, and catalog ratios. The studio is made for resellers and small brands, not just demos.",
+            },
+          ].map((item, i) => (
+            <motion.div
+              key={item.title}
+              variants={stagger(i)}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true, margin: "-40px" }}
+              className="rounded-xl border border-border/70 bg-card p-5 shadow-e1 transition-shadow hover:shadow-e2"
+            >
+              <h3 className="text-[15px] font-semibold leading-snug">{item.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.body}</p>
             </motion.div>
           ))}
         </div>
@@ -526,328 +229,217 @@ function PipelineDive() {
   );
 }
 
-// ---------------------------------------------------------------- Outputs
-
-function Outputs() {
-  const ratios = [
-    { label: "4:5", px: "1080 × 1350", use: "Vinted · Depop · Instagram feeds" },
-    { label: "1:1", px: "1200 × 1200", use: "eBay · Etsy · Amazon listings" },
-    { label: "16:9", px: "1280 × 720", use: "Shop banners · storefront headers" },
-  ];
+function How() {
   return (
-    <Section
-      id="outputs"
-      eyebrow="Output"
-      title="Sized for where it sells"
-      lede="Every export is a full-resolution PNG rendered at listing dimensions — no upscaling guesswork, no cropped product."
-    >
-      <div className="mt-12 grid gap-4 md:grid-cols-3">
-        {ratios.map((r, i) => (
-          <motion.div key={r.label} {...stagger(i)}>
-            <Card className="h-full">
-              <div className="flex items-baseline justify-between">
-                <span className="font-display text-4xl font-bold tracking-tight">
-                  {r.label}
-                </span>
-                <span className="font-mono text-xs text-muted-foreground">{r.px}</span>
-              </div>
-              <div
-                aria-hidden
-                className="mt-5 rounded-lg border border-border/70 bg-muted/40"
-                style={{
-                  aspectRatio: r.label === "16:9" ? "16 / 9" : r.label === "1:1" ? "1 / 1" : "4 / 5",
-                  maxHeight: 132,
-                }}
-              />
-              <p className="mt-4 text-sm text-muted-foreground">{r.use}</p>
-            </Card>
-          </motion.div>
-        ))}
-      </div>
+    <section id="how" className="bg-card/40">
+      <div className="mx-auto max-w-6xl px-5 pb-16 pt-14 sm:px-6 lg:px-8">
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="mb-10 text-center"
+        >
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">How it works</p>
+          <h2 className="mt-3 font-display text-3xl tracking-tight font-semibold">Four steps, all in front of you.</h2>
+        </motion.div>
 
-      <motion.div {...reveal} className="mt-4">
-        <Card className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-brand/12 text-brand">
-              <Wand2 className="size-5" />
-            </div>
-            <div>
-              <h3 className="font-display text-[17px] font-semibold">
-                Five output styles, one click
-              </h3>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                Pure white, white + shadow, premium desk, studio grey, moody — download
-                them all and pick later.
-              </p>
-            </div>
-          </div>
-          <Button variant="outline" asChild>
-            <Link to="/studio">
-              Open the studio
-              <ChevronRight className="size-4" />
-            </Link>
-          </Button>
-        </Card>
-      </motion.div>
-    </Section>
+        <ol className="grid gap-5 lg:grid-cols-4">
+          {[
+            { n: "01", title: "Drop a photo", body: "Upload, drag in, or paste from your clipboard. Any phone snapshot works — clutter, angles, mess included." },
+            { n: "02", title: "We find the product", body: "AI matting and a custom edge-guided engine isolate the main object, refine the edges, and keep the background out." },
+            { n: "03", title: "You pick the look", body: "Choose a backdrop, a ratio, and a shadow. The studio keeps the product honest and the light believable." },
+            { n: "04", title: "Export the banner", body: "Download a full-resolution PNG. One photo becomes a clean product shot ready to use." },
+          ].map((step, i) => (
+            <li key={step.n} className="group">
+              <motion.div
+                variants={stagger(i)}
+                initial="hidden"
+                whileInView="visible"
+                viewport={{ once: true, margin: "-40px" }}
+                className="flex h-full flex-col gap-3 rounded-xl border border-border/70 bg-card p-5 shadow-e1 transition-shadow hover:shadow-e2"
+              >
+                <span className="font-display text-sm font-semibold tracking-[0.2em] text-brand">{step.n}</span>
+                <h3 className="text-base font-semibold">{step.title}</h3>
+                <p className="text-sm leading-6 text-muted-foreground">{step.body}</p>
+              </motion.div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
   );
 }
 
-// ---------------------------------------------------------------- Audience
-
-function Audience() {
+function Modes() {
   return (
-    <section id="sellers" className="border-t border-border/60 bg-card/40">
-      <div className="mx-auto grid w-full max-w-6xl items-center gap-14 px-4 py-24 sm:px-6 lg:grid-cols-2 lg:py-28">
-        <motion.div {...reveal} className="order-1 lg:order-2">
-          <Eyebrow>Built for resellers</Eyebrow>
-          <h2 className="mt-4 font-display text-3xl leading-[1.1] font-bold tracking-tight sm:text-[2.6rem]">
-            Your thrift find deserves a studio
-          </h2>
-          <p className="mt-5 text-[15px] leading-7 text-muted-foreground">
-            Reseller listings live or die on the first photo. Enterprise tools pitch
-            studios and seats — Relight is built for the seller shooting on a kitchen
-            table at 11pm.
-          </p>
-          <ul className="mt-7 space-y-3.5">
-            {[
-              "Shadow depth is what reads as “real” — our contact + cast shadow is the whole trick",
-              "Every export is sized for the platform: 4:5 for feeds, 1:1 for squares, 16:9 for shops",
-              "Nothing to install, nothing to learn — if you can upload a photo, you're done",
-            ].map((line) => (
-              <li key={line} className="flex gap-3 text-sm leading-6">
-                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                  <Check className="size-3 text-primary" strokeWidth={3} />
-                </span>
-                <span className="text-foreground/90">{line}</span>
-              </li>
-            ))}
-          </ul>
+    <section id="modes" className="border-t border-border/60">
+      <div className="mx-auto max-w-6xl px-5 pb-16 pt-14 sm:px-6 lg:px-8">
+        <motion.p
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="text-center text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground"
+        >
+          The studio
+        </motion.p>
+
+        <div className="mt-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-8">
+          <motion.div
+            variants={stagger(0)}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, margin: "-40px" }}
+            className="shrink-0 lg:max-w-[420px]"
+          >
+            <h2 className="font-display text-3xl tracking-tight font-semibold">One studio, many outputs.</h2>
+            <p className="mt-3 text-[17px] leading-7 text-muted-foreground">
+              The studio keeps the controls close: backdrop, ratio, shadow angle, softness,
+              and a generative scene matched to your product. Move one slider, see the change.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              {[
+                "Drag, paste, or upload",
+                "3D product preview",
+                "5 output styles",
+                "Full-res PNG export",
+              ].map((chip) => (
+                <div key={chip} className="flex items-center gap-2 rounded-full border border-border/70 bg-card px-3.5 py-1.5 text-xs text-muted-foreground shadow-e1">
+                  <Check className="size-3.5 shrink-0 text-brand" />
+                  {chip}
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          <motion.div
+            variants={fadeUp}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, margin: "-40px" }}
+            transition={{ delay: 0.2 }}
+            className="relative"
+          >
+            <div className="rounded-xl border border-border/70 bg-[#0c0e10] p-2 shadow-e3">
+              <ProductStage rotation="spin" size={280} showGround={false} />
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">Drag the preview to inspect — spun for the landing, floating in the studio.</p>
+          </motion.div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BeforeAfter() {
+  return (
+    <section className="bg-card/40">
+      <div className="mx-auto max-w-6xl px-5 pb-16 pt-14 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-2xl flex-col items-center text-center">
+          <motion.p
+            variants={fadeUp}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, margin: "-40px" }}
+            className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground"
+          >
+            Messy in, clean out
+          </motion.p>
+          <motion.h2
+            variants={stagger(1)}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, margin: "-40px" }}
+            className="mt-3 font-display text-3xl tracking-tight font-semibold"
+          >
+            The same product, twice.
+          </motion.h2>
+        </div>
+
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          transition={{ delay: 0.2 }}
+          className="mt-8 rounded-xl border border-border/70 bg-muted/40 p-2 shadow-e2"
+        >
+          <div className="aspect-[4/5] w-full overflow-hidden rounded-xl bg-muted/60">
+            <img
+              src="https://images.pexels.com/photos/1867691/pexels-photo-1867691.jpeg?auto=compress&cs=tinysrgb&w=800"
+              alt="A messy phone photo of a product on a cluttered background"
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          </div>
+        </motion.div>
+
+        <p className="mt-5 text-sm text-muted-foreground text-center">
+          The before is a real phone photo. The after is what the studio produces from it — one click, one cutout, one export.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function Final() {
+  return (
+    <section className="border-t border-border/60 bg-[#0c0e10] text-white">
+      <div className="mx-auto flex max-w-6xl flex-col items-center gap-6 px-5 py-16 sm:px-6 lg:px-8">
+        <motion.p
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="text-xs font-medium uppercase tracking-[0.18em] text-white/50"
+        >
+          Start clean
+        </motion.p>
+        <motion.h2
+          variants={stagger(1)}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="font-display text-4xl tracking-tight font-semibold text-center"
+        >
+          Your first clean product shot is one upload away.
+        </motion.h2>
+        <motion.div
+          variants={stagger(2)}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-40px" }}
+          className="mt-2 flex flex-wrap items-center justify-center gap-4"
+        >
           <Link
             to="/studio"
-            className="mt-8 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            className="flex h-11 items-center gap-2 rounded-lg bg-brand px-6 text-sm font-medium text-brand-foreground shadow-e2 transition-transform hover:-translate-y-0.5"
           >
-            See it on your own photo
-            <ChevronRight className="size-4" />
+            Open the studio
+            <ArrowRight className="size-4" />
           </Link>
-        </motion.div>
-
-        <motion.div {...stagger(1)} className="order-2 lg:order-1">
-          <div className="edge-top relative overflow-hidden rounded-2xl border border-border/70 bg-card p-5 shadow-e3">
-            <div className="rounded-xl bg-gradient-to-b from-[#f7f1e6] to-[#e6d7c3] p-6">
-              <div className="relative flex aspect-[4/5] items-center justify-center">
-                <div className="text-center">
-                  <div className="mx-auto flex size-16 items-center justify-center rounded-2xl bg-white/75 shadow-e1">
-                    <Sparkles className="size-7 text-brand" />
-                  </div>
-                  <p className="mt-5 max-w-xs text-sm leading-6 text-[#6b5a44]">
-                    One laptop. One surface. One believable shadow.
-                    <br />
-                    That's the whole listing photo.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="mt-4 flex items-center justify-between px-1">
-              <div className="flex items-center gap-2">
-                {["#f7f1e6", "#e8f2ee", "#f7edeb", "#eaf0f6", "#33373b"].map((c) => (
-                  <span
-                    key={c}
-                    className="size-3.5 rounded-full ring-1 ring-black/10"
-                    style={{ background: c }}
-                  />
-                ))}
-              </div>
-              <span className="text-xs text-muted-foreground">5 styles · 3 ratios</span>
-            </div>
-          </div>
+          <a
+            href="#proof"
+            className="flex h-11 items-center gap-2 rounded-lg border border-white/20 bg-white/5 px-6 text-sm font-medium text-white/90 transition-colors hover:bg-white/10"
+          >
+            How it works
+          </a>
         </motion.div>
       </div>
     </section>
   );
 }
-
-// ---------------------------------------------------------------- FAQ
-
-function Faq() {
-  const [open, setOpen] = useState<number | null>(0);
-  const items = [
-    {
-      q: "Does my photo get uploaded anywhere?",
-      a: "No. Decoding, matting, upscaling, shadow rendering and export all happen in your browser. There is no upload endpoint in the app.",
-    },
-    {
-      q: "What happens on the first visit?",
-      a: "The AI matting model (~60 MB, MIT-licensed BiRefNet-lite) downloads once and is cached by the browser. If it fails or is slow, the built-in segmentation engine takes over automatically and everything still works.",
-    },
-    {
-      q: "Why did my product get clipped?",
-      a: "If the product touches the frame edge, the matte has no background to key against. The studio flags this, and the cutout sensitivity slider lets you push the tolerance up.",
-    },
-    {
-      q: "What do I get out of it?",
-      a: "Full-resolution PNGs at 4:5, 1:1 or 16:9 — one per output style, or all five at once from the export button.",
-    },
-  ];
-  return (
-    <Section id="faq" eyebrow="FAQ" title="The practical details">
-      <div className="mt-10 divide-y divide-border/70 overflow-hidden rounded-2xl border border-border/70 bg-card">
-        {items.map((it, i) => {
-          const isOpen = open === i;
-          return (
-            <div key={it.q}>
-              <button
-                onClick={() => setOpen(isOpen ? null : i)}
-                aria-expanded={isOpen}
-                className="flex w-full items-center justify-between gap-4 px-6 py-5 text-left transition-colors hover:bg-muted/40"
-              >
-                <span className="font-display text-[15px] font-semibold">{it.q}</span>
-                <ChevronRight
-                  className={cn(
-                    "size-4 shrink-0 text-muted-foreground transition-transform duration-300",
-                    isOpen && "rotate-90 text-primary",
-                  )}
-                />
-              </button>
-              <motion.div
-                initial={false}
-                animate={{ height: isOpen ? "auto" : 0, opacity: isOpen ? 1 : 0 }}
-                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-                className="overflow-hidden"
-              >
-                <p className="px-6 pb-5 text-sm leading-6 text-muted-foreground">{it.a}</p>
-              </motion.div>
-            </div>
-          );
-        })}
-      </div>
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------- Final CTA
-
-function FinalCta() {
-  return (
-    <section className="px-4 pb-24 sm:px-6">
-      <motion.div {...reveal}>
-        <div className="grain relative mx-auto max-w-6xl overflow-hidden rounded-3xl bg-ink px-6 py-16 text-center text-white sm:px-12 lg:py-20">
-          <div
-            aria-hidden
-            className="animate-wash absolute -top-28 left-1/2 h-72 w-[620px] -translate-x-1/2 rounded-full bg-brand/25 blur-3xl"
-          />
-          <div
-            aria-hidden
-            className="absolute -bottom-32 right-[-80px] h-72 w-72 rounded-full bg-primary/20 blur-3xl"
-          />
-          <h2 className="relative font-display text-3xl font-bold tracking-tight sm:text-4xl">
-            Your next listing is one upload away
-          </h2>
-          <p className="relative mx-auto mt-4 max-w-md text-[15px] leading-7 text-white/70">
-            Free during launch. No card, no install, no upload — just a messier photo
-            than the one you'll walk away with.
-          </p>
-          <div className="relative mt-9 flex flex-wrap items-center justify-center gap-3">
-            <Button
-              size="lg"
-              asChild
-              className="h-12 bg-white px-6 text-[15px] text-ink hover:bg-white/90"
-            >
-              <Link to="/studio">
-                Start free
-                <ArrowRight className="size-4" />
-              </Link>
-            </Button>
-            <Button
-              size="lg"
-              variant="outline"
-              asChild
-              className="h-12 border-white/25 bg-transparent px-6 text-[15px] text-white hover:bg-white/10 hover:text-white"
-            >
-              <Link to="/studio">See the sample</Link>
-            </Button>
-          </div>
-        </div>
-      </motion.div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------- Footer
 
 function Footer() {
   return (
-    <footer className="border-t border-border/60">
-      <div className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-4 px-4 py-10 text-sm text-muted-foreground sm:flex-row sm:px-6">
-        <div className="flex items-center gap-3">
-          <Logo size={22} />
-          <span className="text-xs">© {new Date().getFullYear()} Relight — hackathon build</span>
-        </div>
-        <div className="flex items-center gap-5">
-          <a className="transition-colors hover:text-foreground" href="#how">
-            How it works
-          </a>
-          <a className="transition-colors hover:text-foreground" href="#pipeline">
-            Pipeline
-          </a>
-          <span className="inline-flex items-center gap-1.5">
-            <Github className="size-3.5" />
-            v1.0
-          </span>
-        </div>
+    <footer className="border-t border-border/60 bg-background">
+      <div className="mx-auto flex max-w-6xl flex-col items-center gap-3 px-5 py-8 text-center text-xs text-muted-foreground sm:flex-row lg:px-8">
+        <span>Relight — Product Photo Studio</span>
+        <span className="hidden sm:inline">·</span>
+        <span>Free. Private. On-device.</span>
+        <span className="sm:ml-2">Made for listings, small brands, and anyone tired of cluttered product photos.</span>
       </div>
     </footer>
-  );
-}
-
-// ---------------------------------------------------------------- primitives
-
-/** Shared section shell: consistent vertical rhythm, width and heading block. */
-function Section({
-  id,
-  eyebrow,
-  title,
-  lede,
-  children,
-}: {
-  id: string;
-  eyebrow: string;
-  title: string;
-  lede?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section id={id} className="mx-auto w-full max-w-6xl px-4 py-24 sm:px-6 lg:py-28">
-      <motion.div {...reveal} className="max-w-2xl">
-        <Eyebrow>{eyebrow}</Eyebrow>
-        <h2 className="mt-4 font-display text-3xl leading-[1.1] font-bold tracking-tight sm:text-[2.6rem]">
-          {title}
-        </h2>
-        {lede && <p className="mt-5 text-[15px] leading-7 text-muted-foreground">{lede}</p>}
-      </motion.div>
-      {children}
-    </section>
-  );
-}
-
-function Eyebrow({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-2 text-[11px] font-semibold tracking-[0.16em] text-primary uppercase">
-      <span className="h-px w-5 bg-primary/50" />
-      {children}
-    </span>
-  );
-}
-
-function Card({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div
-      className={cn(
-        "card-lift edge-top rounded-2xl border border-border/70 bg-card p-6 shadow-e1",
-        className,
-      )}
-    >
-      {children}
-    </div>
   );
 }

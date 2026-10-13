@@ -2,7 +2,7 @@
 //
 // Deliberately free of any MediaPipe import: these helpers are plain arithmetic,
 // so they can be unit-tested in Bun (no DOM, no WASM, no model download). The
-// model-loading half lives in objectDetection.ts and re-exports these for
+// model-loading half lives in objectDetection.ts and re-exports these for (note: objectDetection.ts has been removed from the frontend; this comment is kept for reference).
 // callers that already depend on it.
 
 import type { DetectedObject } from "../segmentation/segment";

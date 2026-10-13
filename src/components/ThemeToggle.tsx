@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
 
-/** Light/dark switch. Defaults to the browser's prefers-color-scheme on first visit. */
+/** Light/dark switch — minimal, no emojis, no decorative icons beyond moon/sun. */
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, toggleTheme } = useTheme();
 
